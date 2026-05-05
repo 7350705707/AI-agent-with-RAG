@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base: Colorful light theme ───────────────────────────────────────── */
+:root { color-scheme: light; }
+
+body {
+  background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 50%, #fdf4ff 100%);
+  background-attachment: fixed;
+  color: #1e293b;
+  min-height: 100vh;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #ede9fe; }
+::-webkit-scrollbar-thumb { background: #a5b4fc; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #818cf8; }
+
+/* ── Content area overrides (main panels — NOT the sidebar) ────────────── */
+/* The sidebar uses explicit bg-indigo-* classes, so gray-* overrides only  */
+/* apply to the main content area: panels, cards, inputs, etc.              */
+
+/* Backgrounds */
+.bg-gray-950 { background-color: #eef2ff !important; }
+.bg-gray-900 { background-color: #ffffff !important; }
+.bg-gray-800 { background-color: #f0f4ff !important; }
+.bg-gray-700 { background-color: #e0e7ff !important; }
+.bg-gray-600 { background-color: #a5b4fc !important; }
+
+/* Backgrounds with opacity */
+.bg-gray-900\/60 { background-color: rgba(255,255,255,0.7) !important; }
+.bg-gray-800\/50 { background-color: rgba(240,244,255,0.5) !important; }
+.bg-gray-800\/40 { background-color: rgba(240,244,255,0.4) !important; }
+.bg-gray-800\/60 { background-color: rgba(240,244,255,0.7) !important; }
+
+/* Text */
+.text-gray-100 { color: #1e1b4b !important; }
+.text-gray-200 { color: #1e293b !important; }
+.text-gray-300 { color: #334155 !important; }
+.text-gray-400 { color: #4b5563 !important; }
+.text-gray-500 { color: #6b7280 !important; }
+.text-gray-600 { color: #6b7280 !important; }
+
+/* Borders */
+.border-gray-800 { border-color: #c7d2fe !important; }
+.border-gray-700 { border-color: #a5b4fc !important; }
+.border-gray-600 { border-color: #818cf8 !important; }
+
+/* Hover backgrounds (content area) */
+.hover\:bg-gray-800:hover { background-color: #e0e7ff !important; }
+.hover\:bg-gray-700:hover { background-color: #c7d2fe !important; }
+.hover\:bg-gray-800\/60:hover { background-color: rgba(224,231,255,0.7) !important; }
+
+/* Hover text */
+.hover\:text-white:hover { color: #1e1b4b !important; }
+.hover\:text-gray-300:hover { color: #4338ca !important; }
+
+/* Focus-within borders */
+.focus-within\:border-blue-600:focus-within { border-color: #4f46e5 !important; }
+.focus-within\:border-emerald-600:focus-within { border-color: #059669 !important; }
+
+/* Markdown tables in chat */
+.prose table { border-collapse: collapse; width: 100%; margin: 0.5rem 0; }
+.prose th, .prose td { border: 1px solid #c7d2fe; padding: 0.4rem 0.75rem; text-align: left; }
+.prose th { background: #eef2ff; color: #3730a3; }
+
+/* ── Upload drop zone ───────────────────────────────────────────────────── */
+.border-dashed { border-color: #a5b4fc !important; }
+
+/* ── Panel / card shadow ────────────────────────────────────────────────── */
+.rounded-xl { box-shadow: 0 1px 6px 0 rgba(99,102,241,0.07); }

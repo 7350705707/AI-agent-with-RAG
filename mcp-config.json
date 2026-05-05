@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "servam-ai": {
+      "url": "http://localhost:8000/mcp/sse",
+      "transport": "sse",
+      "description": "Servam AI MCP Server — search library, list documents, browse conversations, check model status"
+    }
+  }
+}
