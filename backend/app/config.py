@@ -15,7 +15,12 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 KNOWLEDGE_DIR.mkdir(exist_ok=True)
 
 # ── LM Studio / LLM ───────────────────────────────────────────────────────
-LM_STUDIO_BASE_URL = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1")
+# Default to host.docker.internal so the container can always reach LM Studio
+# running on the host machine — works on Docker Desktop (Windows/Mac) and
+# bare Linux Docker Engine (via the extra_hosts → host-gateway in docker-compose).
+# When running bare Python outside Docker, override with:
+#   set LM_STUDIO_BASE_URL=http://localhost:1234/v1
+LM_STUDIO_BASE_URL = os.getenv("LM_STUDIO_BASE_URL", "http://host.docker.internal:1234/v1")
 LLM_MODEL = os.getenv("LLM_MODEL", "nemotron-3-nano-4b")
 
 
