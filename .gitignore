@@ -41,9 +41,12 @@ frontend/.vite/
 *.pem
 *.key
 secrets.json
+backend/.jwt_secret
 
 # ─── Docker ──────────────────────────────────────────────────────────────────
-.dockerignore
+# .dockerignore is a project file — do NOT ignore it
+# *.tar — exported image archive (model-ai-export.tar) can be several GB
+*.tar
 
 # ─── OS / Editor ─────────────────────────────────────────────────────────────
 .DS_Store

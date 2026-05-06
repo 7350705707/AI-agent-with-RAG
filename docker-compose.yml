@@ -1,6 +1,38 @@
 version: "3.9"
+
 services:
-  backend:
-    build: ./backend
+  app:
+    build:
+      context: .           # project root — Dockerfile is here
+      dockerfile: Dockerfile
+    image: model-ai:latest  # tag used by export / load scripts
+    container_name: model-ai
     ports:
-      - "8000:8000"
+      - "8000:8000"        # http://localhost:8000  (frontend + API)
+    environment:
+      # host.docker.internal always resolves to the host machine from inside the container.
+      # Docker Desktop (Windows/Mac): built-in.
+      # Bare Linux Docker Engine: handled by extra_hosts → host-gateway below.
+      # WARNING: do NOT change this to "localhost" — inside a container, localhost
+      #          is the container itself, not the machine running LM Studio.
+      - LM_STUDIO_BASE_URL=http://host.docker.internal:1234/v1
+      - LLM_MODEL=${LLM_MODEL:-nemotron-3-nano-4b}
+      # Broaden CORS so the app works from any local IP / hostname
+      - CORS_ORIGINS=http://localhost:8000,http://127.0.0.1:8000,http://localhost,http://127.0.0.1
+    volumes:
+      # Persist user data on the host so it survives container restarts / upgrades
+      - ./backend/uploads:/app/uploads
+      - ./backend/chroma_db:/app/chroma_db
+      - ./backend/knowledge_files:/app/knowledge_files
+      - ./backend/chat_history.db:/app/chat_history.db
+      - ./backend/.jwt_secret:/app/.jwt_secret
+    extra_hosts:
+      # Makes host.docker.internal resolve to the host on Linux Docker (no-op on Docker Desktop)
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

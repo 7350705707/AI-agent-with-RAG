@@ -89,6 +89,12 @@ from app.document_loader import load_and_split
 from app.llm import list_available_models, get_active_model, set_active_model, ensure_model_loaded, is_no_model_error
 from app.mcp_server import mcp as mcp_server
 
+# ── Global LLM concurrency limiter ─────────────────────────────────────────
+# LM Studio processes one request at a time (single model on GPU).
+# This semaphore prevents multiple simultaneous requests from colliding
+# and causing context / resource errors.
+_llm_semaphore = asyncio.Semaphore(1)
+
 # ── App Setup ──────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Sarvam AI API",
@@ -559,34 +565,38 @@ async def api_chat_stream(request: Request, body: ChatRequest, _user: dict | Non
         except Exception as e:
             q.put(("error", str(e), []))
 
-    threading.Thread(target=_run, daemon=True).start()
-
     async def event_stream():
         full_response = ""
         cited_sources = []
-        try:
-            while True:
-                if await request.is_disconnected():
-                    stop_event.set()
-                    return
-                try:
-                    kind, data, extra = q.get_nowait()
-                except _queue.Empty:
-                    await asyncio.sleep(0.01)
-                    continue
-                if kind == "done":
-                    cited_sources = extra
-                    yield f"data: {json.dumps({'token': '', 'done': True, 'sources': cited_sources})}\n\n"
-                    break
-                elif kind == "error":
-                    yield f"data: {json.dumps({'token': '', 'done': True, 'error': data})}\n\n"
-                    break
-                else:
-                    full_response += data
-                    yield f"data: {json.dumps({'token': data, 'done': False})}\n\n"
-        finally:
-            if full_response and not stop_event.is_set():
-                add_message(conv_id, "assistant", full_response, sources=cited_sources)
+        # Queue with a 503 response if another LLM request is already in flight
+        if _llm_semaphore.locked():
+            yield f"data: {json.dumps({'token': '', 'done': True, 'error': 'Model is busy with another request. Please wait a moment and try again.'})}\n\n"
+            return
+        async with _llm_semaphore:
+            threading.Thread(target=_run, daemon=True).start()
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        stop_event.set()
+                        return
+                    try:
+                        kind, data, extra = q.get_nowait()
+                    except _queue.Empty:
+                        await asyncio.sleep(0.01)
+                        continue
+                    if kind == "done":
+                        cited_sources = extra
+                        yield f"data: {json.dumps({'token': '', 'done': True, 'sources': cited_sources})}\n\n"
+                        break
+                    elif kind == "error":
+                        yield f"data: {json.dumps({'token': '', 'done': True, 'error': data})}\n\n"
+                        break
+                    else:
+                        full_response += data
+                        yield f"data: {json.dumps({'token': data, 'done': False})}\n\n"
+            finally:
+                if full_response and not stop_event.is_set():
+                    add_message(conv_id, "assistant", full_response, sources=cited_sources)
 
     return StreamingResponse(
         event_stream(),
@@ -616,33 +626,36 @@ async def api_general_chat_stream(request: Request, body: ChatRequest, _user: di
         except Exception as e:
             q.put(("error", str(e)))
 
-    threading.Thread(target=_run, daemon=True).start()
-
     async def event_stream():
         full_response = ""
-        try:
-            while True:
-                if await request.is_disconnected():
-                    stop_event.set()
-                    return
-                try:
-                    item = q.get_nowait()
-                except _queue.Empty:
-                    await asyncio.sleep(0.01)
-                    continue
-                kind = item[0]
-                if kind == "done":
-                    yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
-                    break
-                elif kind == "error":
-                    yield f"data: {json.dumps({'token': '', 'done': True, 'error': item[1]})}\n\n"
-                    break
-                else:
-                    full_response += item[1]
-                    yield f"data: {json.dumps({'token': item[1], 'done': False})}\n\n"
-        finally:
-            if full_response and not stop_event.is_set():
-                add_message(conv_id, "assistant", full_response)
+        if _llm_semaphore.locked():
+            yield f"data: {json.dumps({'token': '', 'done': True, 'error': 'Model is busy with another request. Please wait a moment and try again.'})}\n\n"
+            return
+        async with _llm_semaphore:
+            threading.Thread(target=_run, daemon=True).start()
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        stop_event.set()
+                        return
+                    try:
+                        item = q.get_nowait()
+                    except _queue.Empty:
+                        await asyncio.sleep(0.01)
+                        continue
+                    kind = item[0]
+                    if kind == "done":
+                        yield f"data: {json.dumps({'token': '', 'done': True})}\n\n"
+                        break
+                    elif kind == "error":
+                        yield f"data: {json.dumps({'token': '', 'done': True, 'error': item[1]})}\n\n"
+                        break
+                    else:
+                        full_response += item[1]
+                        yield f"data: {json.dumps({'token': item[1], 'done': False})}\n\n"
+            finally:
+                if full_response and not stop_event.is_set():
+                    add_message(conv_id, "assistant", full_response)
 
     return StreamingResponse(
         event_stream(),

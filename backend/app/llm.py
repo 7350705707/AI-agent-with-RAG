@@ -47,6 +47,24 @@ def is_no_model_error(e: Exception) -> bool:
     return "No models loaded" in str(e)
 
 
+def is_context_size_error(e: Exception) -> bool:
+    """Return True when the exception indicates the prompt exceeded the model's context window."""
+    msg = str(e).lower()
+    return any(
+        phrase in msg
+        for phrase in (
+            "context size",
+            "context length",
+            "context window",
+            "max_tokens",
+            "token limit",
+            "too many tokens",
+            "prompt is too long",
+            "exceeds the maximum",
+        )
+    )
+
+
 def ensure_model_loaded() -> bool:
     """Check LM Studio and load the configured model if it isn't already loaded.
 
