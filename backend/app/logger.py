@@ -1,8 +1,6 @@
-"""Centralised logging configuration for Sarvam AI backend.
-
-Call `setup_logging()` once at startup (in main.py).  All modules can then
-use the standard `logging.getLogger(__name__)` pattern and their output will
-automatically flow through this configuration.
+"""Backward-compatibility shim — import from app.utils.logger instead."""
+from app.utils.logger import *  # noqa: F401,F403
+from app.utils.logger import setup_logging  # noqa: F401
 
 Log files are written to  <repo_root>/backend/logs/  and rotated daily,
 keeping 30 days of history.  Console output mirrors the file at the configured

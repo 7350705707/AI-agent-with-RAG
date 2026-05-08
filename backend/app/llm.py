@@ -7,7 +7,7 @@ import subprocess
 import httpx
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
-from app.config import LM_STUDIO_BASE_URL, LLM_MODEL
+from app.config import LM_STUDIO_BASE_URL, LLM_MODEL, MODEL_CONTEXT_LENGTH
 
 log = logging.getLogger(__name__)
 _active_model = LLM_MODEL
@@ -61,6 +61,8 @@ def is_context_size_error(e: Exception) -> bool:
             "too many tokens",
             "prompt is too long",
             "exceeds the maximum",
+            "n_keep",
+            "n_ctx",
         )
     )
 
@@ -95,7 +97,7 @@ def ensure_model_loaded() -> bool:
     try:
         load_resp = httpx.post(
             f"{base}/models/load",
-            json={"model": _active_model},
+            json={"model": _active_model, "config": {"contextLength": MODEL_CONTEXT_LENGTH}},
             timeout=300,  # model loading can take a while
         )
         if load_resp.status_code < 400:

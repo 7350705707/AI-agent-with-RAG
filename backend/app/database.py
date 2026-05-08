@@ -190,6 +190,16 @@ def list_conversations(agent_type: str | None = None, user_id: str | None = "__u
     return [dict(r) for r in rows]
 
 
+def get_conversation_ids_by_user(user_id: str) -> list[str]:
+    """Return all conversation IDs owned by *user_id*."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id FROM conversations WHERE user_id=?", (user_id,)
+    ).fetchall()
+    conn.close()
+    return [r["id"] for r in rows]
+
+
 def delete_conversation(conv_id: str) -> bool:
     conn = _connect()
     # Collect file paths registered for this conversation before deleting

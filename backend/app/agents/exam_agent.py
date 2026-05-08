@@ -9,10 +9,10 @@ import httpx
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from app.llm import get_llm, get_llm_streaming, get_active_model
-from app.prompts import EXAM_PROMPT, EXAM_PROMPT_NO_DOCS
+from app.utils.prompts import EXAM_PROMPT, EXAM_PROMPT_NO_DOCS
 from app.database import get_messages
 from app.config import UPLOAD_DIR, LM_STUDIO_BASE_URL
-from app.document_loader import load_and_split
+from app.utils.document_loader import load_and_split
 
 log = logging.getLogger(__name__)
 
@@ -201,9 +201,14 @@ def run_exam_generator_steps(
         )
 
         # FIXED: Serialize user input and file content into a single string
+        # Cap each document at 2000 chars to stay within the model's context window
+        _MAX_DOC_CHARS = 2000
         combined_user_content = f"Instructions: {user_instructions or 'Generate the exam paper from the attached content.'}\n\n"
         for f in files:
-            combined_user_content += f"--- Document: {f['path'].name} ---\n{f['text']}\n\n"
+            doc_text = f['text'][:_MAX_DOC_CHARS]
+            if len(f['text']) > _MAX_DOC_CHARS:
+                doc_text += "\n[...document truncated to fit context window...]"
+            combined_user_content += f"--- Document: {f['path'].name} ---\n{doc_text}\n\n"
 
         yield ("generating", "Generating exam paper…", "")
         base = LM_STUDIO_BASE_URL.rstrip("/")
@@ -214,7 +219,7 @@ def run_exam_generator_steps(
                 {"role": "user", "content": combined_user_content},
             ],
             "temperature": 0.2,
-            "max_tokens": 8192,
+            "max_tokens": 3000,
             "stream": True,
         }
         try:
@@ -254,7 +259,7 @@ def run_exam_generator_steps(
         yield ("done", "Exam paper complete ✓", accumulated.strip())
     else:
         yield ("generating", "Generating response…", "")
-        llm = get_llm_streaming(temperature=0.2, num_predict=4096)
+        llm = get_llm_streaming(temperature=0.2, num_predict=3000)
         chain = EXAM_PROMPT_NO_DOCS | llm
         accumulated = ""
         for token in chain.stream({

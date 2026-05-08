@@ -43,7 +43,7 @@ def analyze_query_for_rag(user_input: str) -> str:
     if get_knowledge_chunk_count() == 0:
         return user_input  # No KB to search — skip analysis
     try:
-        from app.prompts import QUERY_ANALYSIS_PROMPT
+        from app.utils.prompts import QUERY_ANALYSIS_PROMPT
         llm = get_llm(temperature=0.0, num_predict=40)
         result = (QUERY_ANALYSIS_PROMPT | llm).invoke({"input": user_input})
         query = result.strip().split("\n")[0].strip()
@@ -73,7 +73,7 @@ def expand_query_keywords(user_input: str) -> list:
     if get_knowledge_chunk_count() == 0:
         return []
     try:
-        from app.prompts import KEYWORD_EXPANSION_PROMPT
+        from app.utils.prompts import KEYWORD_EXPANSION_PROMPT
         llm = get_llm(temperature=0.1, num_predict=60)
         result = (KEYWORD_EXPANSION_PROMPT | llm).invoke({"input": user_input})
         raw = result.strip()

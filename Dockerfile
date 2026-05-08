@@ -36,6 +36,18 @@ COPY backend/requirements.txt ./requirements.txt
 RUN pip install --upgrade pip \
  && pip install --no-cache-dir -r requirements.txt
 
+# ── Pre-download the ChromaDB default ONNX embedding model ─────────────────
+# ChromaDB's fallback embedding function (all-MiniLM-L6-v2 via ONNX) normally
+# downloads ~25 MB on first use. On an offline PC that download fails and RAG
+# returns no results. Baking it into the image here means it is always available.
+RUN python -c "\
+from chromadb.utils.embedding_functions import DefaultEmbeddingFunction; \
+print('Downloading ONNX embedding model...'); \
+ef = DefaultEmbeddingFunction(); \
+ef(['warmup']); \
+print('ONNX embedding model cached successfully.') \
+"
+
 # Copy backend application code
 COPY backend/ ./
 

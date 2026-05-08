@@ -50,6 +50,15 @@ if (-not (Test-Path $ExportFile)) {
     exit 1
 }
 Write-Host "      Found."
+
+# Warn if RAG data folders are missing
+if (-not (Test-Path "backend\chroma_db") -or -not (Get-ChildItem "backend\chroma_db" -ErrorAction SilentlyContinue)) {
+    Write-Host ""
+    Write-Host "  WARNING: backend\chroma_db\ is empty or missing."
+    Write-Host "           RAG search will return no results until you copy it from"
+    Write-Host "           the source machine or re-upload your documents."
+    Write-Host ""
+}
 Write-Host ""
 
 # ── Load the image ────────────────────────────────────────────────────────

@@ -1,8 +1,6 @@
-"""Document loaders — extract text from PDF, DOCX, and PPTX files."""
-
-from pathlib import Path
-
-from langchain_community.document_loaders import (
+"""Backward-compatibility shim — import from app.utils.document_loader instead."""
+from app.utils.document_loader import *  # noqa: F401,F403
+from app.utils.document_loader import load_and_split, SPLITTER, LOADER_MAP  # noqa: F401
     PyPDFLoader,
     Docx2txtLoader,
 )

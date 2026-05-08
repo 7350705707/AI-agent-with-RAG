@@ -1,6 +1,8 @@
 """Pydantic request/response schemas."""
 
-from pydantic import BaseModel, Field
+import re
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class ChatRequest(BaseModel):
@@ -56,12 +58,26 @@ class LoginRequest(BaseModel):
 
 class SignupRequest(BaseModel):
     username: str = Field(..., min_length=2, max_length=100)
-    password: str = Field(..., min_length=4, max_length=200)
+    password: str = Field(..., min_length=8, max_length=200)
+
+    @field_validator("password")
+    @classmethod
+    def password_complexity(cls, v: str) -> str:
+        errors = []
+        if not re.search(r"[A-Z]", v):
+            errors.append("one uppercase letter")
+        if not re.search(r"[0-9]", v):
+            errors.append("one digit")
+        if not re.search(r"[^A-Za-z0-9]", v):
+            errors.append("one special character")
+        if errors:
+            raise ValueError(f"Password must contain at least {', '.join(errors)}")
+        return v
 
 
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=2, max_length=100)
-    password: str = Field(..., min_length=4, max_length=200)
+    password: str = Field(..., min_length=8, max_length=200)
     role: str = Field(default="user", pattern="^(user|admin)$")
     agents: list[str] = Field(default_factory=lambda: ["chat"])
 
@@ -73,7 +89,7 @@ class UserUpdate(BaseModel):
 
 
 class UserPasswordUpdate(BaseModel):
-    password: str = Field(..., min_length=4, max_length=200)
+    password: str = Field(..., min_length=8, max_length=200)
 
 
 class UserOut(BaseModel):

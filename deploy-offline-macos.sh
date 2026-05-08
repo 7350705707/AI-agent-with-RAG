@@ -67,6 +67,15 @@ if [[ ! -f "$EXPORT_FILE" ]]; then
     exit 1
 fi
 echo "      Found."
+
+# Warn if RAG data folders are missing
+if [[ ! -d "backend/chroma_db" ]] || [[ -z "$(ls -A backend/chroma_db 2>/dev/null)" ]]; then
+    echo ""
+    echo "  WARNING: backend/chroma_db/ is empty or missing."
+    echo "           RAG search will return no results until you copy it from"
+    echo "           the source machine or re-upload your documents."
+    echo ""
+fi
 echo ""
 
 # ── 3. Load image ─────────────────────────────────────────────────────────

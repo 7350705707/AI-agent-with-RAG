@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import { Bot, User, Copy, Check } from 'lucide-react';
+// rehype-raw intentionally removed: allowing raw HTML from LLM output is an XSS vector.
 
 export default function MessageBubble({ role, content }) {
   const isUser = role === 'user';

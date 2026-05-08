@@ -10,6 +10,7 @@ import {
   FileDown,
   Square,
   CheckSquare,
+  ChevronDown,
 } from 'lucide-react';
 import { sendExamStream, getMessages, createConversation, uploadFile, renameConversation } from '../api';
 import MessageBubble from './MessageBubble';
@@ -18,14 +19,48 @@ const ACCEPT = '.pdf,.docx,.pptx';
 
 // -- Helpers -----------------------------------------------------------------
 
-function buildPrompt(mcqCount, tfCount, fitbCount, difficulty, extra) {
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderExamHeader(header = {}) {
+  const { subjectName, instructorName, institution, examDate, totalMarks, timeAllowed } = header;
+  const hasAny = subjectName || instructorName || institution || examDate || totalMarks || timeAllowed;
+  if (!hasAny) return '';
+  const cell = (label, value) => value
+    ? `<tr>
+        <td style="padding:6px 12px;font-weight:600;background:#f3f4f6;color:#374151;width:26%;white-space:nowrap;border:1px solid #d1d5db;">${escapeHtml(label)}</td>
+        <td style="padding:6px 12px;border:1px solid #d1d5db;">${escapeHtml(value)}</td>
+       </tr>`
+    : '';
+  const instRow = institution
+    ? `<tr><td colspan="2" style="padding:10px 12px;font-size:15px;font-weight:700;text-align:center;background:#f9fafb;border:1px solid #d1d5db;">${escapeHtml(institution)}</td></tr>`
+    : '';
+  return `<table style="width:100%;border-collapse:collapse;margin-bottom:24px;font-size:13px;">
+    ${instRow}
+    ${cell('Subject', subjectName)}
+    ${cell('Instructor', instructorName)}
+    ${cell('Date', examDate)}
+    ${cell('Total Marks', totalMarks)}
+    ${cell('Time Allowed', timeAllowed)}
+  </table>`;
+}
+
+function buildPrompt(mcqCount, tfCount, fitbCount, extra, ratios) {
   const parts = [];
   if (mcqCount > 0) parts.push(`${mcqCount} MCQ questions`);
   if (tfCount > 0) parts.push(`${tfCount} True or False questions`);
   if (fitbCount > 0) parts.push(`${fitbCount} Fill in the Blanks questions`);
+  const { easy, medium, hard } = ratios;
+  const ratioStr = `(Easy ${easy}% / Medium ${medium}% / Hard ${hard}%)`;
   const base = parts.length
-    ? `Generate a ${difficulty} difficulty exam paper with ${parts.join(', ')}.`
-    : `Generate a ${difficulty} difficulty exam paper.`;
+    ? `Generate an exam paper ${ratioStr} with ${parts.join(', ')}.`
+    : `Generate an exam paper ${ratioStr}.`;
   return extra.trim() ? `${base} Additional instructions: ${extra.trim()}` : base;
 }
 
@@ -71,8 +106,9 @@ function renderQuestionsToHtml(questions) {
   return html;
 }
 
-function exportSelectedPdf(questions, title) {
+function exportSelectedPdf(questions, title, header = {}) {
   const win = window.open('', '_blank');
+  const headerHtml = renderExamHeader(header);
   const bodyHtml = renderQuestionsToHtml(questions);
   win.document.write(`<!DOCTYPE html><html><head><title>${title}</title>
     <style>
@@ -82,7 +118,7 @@ function exportSelectedPdf(questions, title) {
       @media print{body{padding:0}}
     </style></head><body>
     <h1>${title}</h1>
-    <p class="meta">Exported on ${new Date().toLocaleString()}</p>
+    ${headerHtml}
     ${bodyHtml}
     </body></html>`);
   win.document.close();
@@ -90,11 +126,12 @@ function exportSelectedPdf(questions, title) {
   setTimeout(() => { win.print(); }, 300);
 }
 
-function exportSelectedJson(questions, title) {
+function exportSelectedJson(questions, title, header = {}) {
   const sections = { mcq: [], true_false: [], fill_blank: [] };
   questions.forEach((q) => { if (sections[q.type]) sections[q.type].push(q); });
   const data = {
     title,
+    header,
     exported_at: new Date().toISOString(),
     sections: Object.fromEntries(
       Object.entries(sections).map(([type, qs]) => [
@@ -120,7 +157,8 @@ function exportSelectedJson(questions, title) {
   URL.revokeObjectURL(url);
 }
 
-function exportSelectedDoc(questions, title) {
+function exportSelectedDoc(questions, title, header = {}) {
+  const headerHtml = renderExamHeader(header);
   const bodyHtml = renderQuestionsToHtml(questions);
   const html = `<html xmlns:o='urn:schemas-microsoft-com:office:office'
     xmlns:w='urn:schemas-microsoft-com:office:word'
@@ -128,7 +166,7 @@ function exportSelectedDoc(questions, title) {
     <head><meta charset='utf-8'><title>${title}</title>
     <style>body{font-family:Arial,sans-serif;padding:32px;line-height:1.6;}</style></head>
     <body><h1>${title}</h1>
-    <p style="color:#888;font-size:10pt;">Exported on ${new Date().toLocaleString()}</p>
+    ${headerHtml}
     ${bodyHtml}
     </body></html>`;
   const blob = new Blob(['\ufeff', html], { type: 'application/msword' });
@@ -282,17 +320,39 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
   const [mcqCount, setMcqCount] = useState(10);
   const [tfCount, setTfCount] = useState(10);
   const [fitbCount, setFitbCount] = useState(10);
-  const [difficulty, setDifficulty] = useState('medium');
+  const [easyRatio, setEasyRatio] = useState(50);
+  const [mediumRatio, setMediumRatio] = useState(30);
+  const [hardRatio, setHardRatio] = useState(20);
   const [loading, setLoading] = useState(false);
   const [files, setFiles] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [streamContent, setStreamContent] = useState('');
   const [structuredQuestions, setStructuredQuestions] = useState(null);
   const [showExportPanel, setShowExportPanel] = useState(false);
+  // Exam paper header fields
+  const [subjectName, setSubjectName] = useState('');
+  const [instructorName, setInstructorName] = useState('');
+  const [institution, setInstitution] = useState('');
+  const [examDate, setExamDate] = useState(new Date().toISOString().slice(0, 10));
+  const [totalMarks, setTotalMarks] = useState('');
+  const [timeAllowed, setTimeAllowed] = useState('');
+  const [showHeaderForm, setShowHeaderForm] = useState(false);
   const abortRef = useRef(null);
   const activeConvRef = useRef(conversationId);
   const bottomRef = useRef(null);
   const fileInputRef = useRef(null);
+  const textareaRef = useRef(null);
+
+  // Auto-expand textarea height; show scrollbar once it exceeds MAX_H
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const MAX_H = 160;
+    el.style.height = 'auto';
+    const newH = Math.min(el.scrollHeight, MAX_H);
+    el.style.height = `${newH}px`;
+    el.style.overflowY = el.scrollHeight > MAX_H ? 'auto' : 'hidden';
+  }, [input]);
 
   useEffect(() => {
     if (conversationId !== activeConvRef.current) {
@@ -365,9 +425,10 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
 
     // First message: include question counts + difficulty. Follow-up: send user text only.
     const isFirstMessage = messages.length === 0;
+    const ratios = { easy: easyRatio, medium: mediumRatio, hard: hardRatio };
     const combinedPrompt = isFirstMessage
-      ? buildPrompt(mcqCount, tfCount, fitbCount, difficulty, input)
-      : input.trim();
+      ? buildPrompt(mcqCount, tfCount, fitbCount, input, ratios)
+      : (input.trim() || 'Continue the exam paper.');
 
     let convId = conversationId;
     if (!convId) {
@@ -414,6 +475,11 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
           if (activeConvRef.current !== targetConvId) return;
 
           const { step, label, content, questions } = data;
+
+          if (step === 'queued' || data.queued) {
+            setStreamContent('\u23F3 Waiting for model to be available\u2026');
+            return;
+          }
 
           if (step === 'error') {
             setStreamContent('');
@@ -482,6 +548,7 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
     const assistantMsgs = messages.filter((m) => m.role === 'assistant');
     if (!assistantMsgs.length) return;
     const win = window.open('', '_blank');
+    const headerHtml = renderExamHeader({ subjectName, instructorName, institution, examDate, totalMarks, timeAllowed });
     const sections = assistantMsgs.map((m, i) =>
       `<h2>Exam Paper ${i + 1}</h2><pre>${m.content.replace(/</g, '&lt;')}</pre>`
     ).join('<hr/>');
@@ -489,7 +556,7 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
       <style>body{font-family:Arial,sans-serif;padding:32px;max-width:860px;margin:0 auto;line-height:1.6;}
       h2{font-size:16px;}pre{white-space:pre-wrap;font-size:14px;}hr{border-top:1px solid #ddd;margin:24px 0;}
       .meta{color:#888;font-size:12px;margin-bottom:24px;}@media print{body{padding:0}}</style></head><body>
-      <h1>Exam Papers Export</h1><p class="meta">Exported on ${new Date().toLocaleString()}</p>
+      <h1>Exam Papers Export</h1>${headerHtml}
       ${sections}</body></html>`);
     win.document.close();
     win.focus();
@@ -499,6 +566,7 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
   const exportAllDoc = () => {
     const assistantMsgs = messages.filter((m) => m.role === 'assistant');
     if (!assistantMsgs.length) return;
+    const headerHtml = renderExamHeader({ subjectName, instructorName, institution, examDate, totalMarks, timeAllowed });
     const sections = assistantMsgs.map((m, i) =>
       `<h2>Exam Paper ${i + 1}</h2><pre>${m.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre><hr/>`
     ).join('');
@@ -507,7 +575,7 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
       xmlns='http://www.w3.org/TR/REC-html40'>
       <head><meta charset='utf-8'><title>Exam Papers</title>
       <style>body{font-family:Arial,sans-serif;padding:32px;line-height:1.6;}pre{white-space:pre-wrap;font-size:13pt;}hr{border:1px solid #ccc;margin:24px 0;}</style></head>
-      <body><h1>Exam Papers Export</h1><p style="color:#888;font-size:10pt;">Exported on ${new Date().toLocaleString()}</p>
+      <body><h1>Exam Papers Export</h1>${headerHtml}
       ${sections}</body></html>`;
     const blob = new Blob(['\ufeff', html], { type: 'application/msword' });
     const url = URL.createObjectURL(blob);
@@ -585,9 +653,9 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
           <StructuredExamView
             key={structuredQuestions.length}
             questions={structuredQuestions}
-            onExportPdf={(qs) => exportSelectedPdf(qs, 'Exam Paper')}
-            onExportDoc={(qs) => exportSelectedDoc(qs, 'Exam Paper')}
-            onExportJson={(qs) => exportSelectedJson(qs, 'Exam Paper')}
+            onExportPdf={(qs) => exportSelectedPdf(qs, 'Exam Paper', { subjectName, instructorName, institution, examDate, totalMarks, timeAllowed })}
+            onExportDoc={(qs) => exportSelectedDoc(qs, 'Exam Paper', { subjectName, instructorName, institution, examDate, totalMarks, timeAllowed })}
+            onExportJson={(qs) => exportSelectedJson(qs, 'Exam Paper', { subjectName, instructorName, institution, examDate, totalMarks, timeAllowed })}
           />
         )}
 
@@ -629,6 +697,40 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
 
       {/* Input area */}
       <div className="shrink-0 border-t border-slate-200 px-6 py-4 space-y-3">
+        {/* Exam Paper Header Form */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50 overflow-hidden">
+          <button
+            onClick={() => setShowHeaderForm((v) => !v)}
+            className="w-full flex items-center justify-between px-4 py-2.5 text-xs font-medium text-slate-600 hover:bg-slate-100 transition"
+          >
+            <span>Exam Paper Header (optional)</span>
+            <ChevronDown size={14} className={`transition-transform ${showHeaderForm ? 'rotate-180' : ''}`} />
+          </button>
+          {showHeaderForm && (
+            <div className="grid grid-cols-2 gap-3 px-4 pb-4 pt-1">
+              {[
+                { label: 'Institution', value: institution, set: setInstitution, colSpan: true },
+                { label: 'Subject', value: subjectName, set: setSubjectName },
+                { label: 'Instructor', value: instructorName, set: setInstructorName },
+                { label: 'Date', value: examDate, set: setExamDate, type: 'date' },
+                { label: 'Total Marks', value: totalMarks, set: setTotalMarks, type: 'number' },
+                { label: 'Time Allowed', value: timeAllowed, set: setTimeAllowed, placeholder: 'e.g. 90 min' },
+              ].map(({ label, value, set, colSpan, type, placeholder }) => (
+                <div key={label} className={colSpan ? 'col-span-2' : ''}>
+                  <label className="block text-[11px] text-slate-400 mb-1">{label}</label>
+                  <input
+                    type={type || 'text'}
+                    value={value}
+                    onChange={(e) => set(e.target.value)}
+                    placeholder={placeholder || label}
+                    className="w-full bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-emerald-500 transition"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Question-count inputs + difficulty selector */}
         <div className="flex items-center gap-4 flex-wrap">
           <label className="flex items-center gap-2 text-xs text-slate-500">
@@ -664,26 +766,34 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
               className="w-16 bg-white border border-slate-300 rounded-lg px-2 py-1 text-center text-sm text-slate-800 outline-none focus:border-emerald-500 transition"
             />
           </label>
-          {/* Difficulty selector */}
-          <div className="flex items-center gap-1.5 ml-auto">
-            <span className="text-xs text-slate-400 mr-0.5">Difficulty:</span>
-            {[
-              { id: 'easy', label: 'Easy', active: 'bg-emerald-500 text-white border-emerald-500', idle: 'hover:border-emerald-300 hover:text-emerald-600' },
-              { id: 'medium', label: 'Medium', active: 'bg-amber-500 text-white border-amber-500', idle: 'hover:border-amber-300 hover:text-amber-600' },
-              { id: 'hard', label: 'Hard', active: 'bg-red-500 text-white border-red-500', idle: 'hover:border-red-300 hover:text-red-600' },
-            ].map(({ id, label, active, idle }) => (
-              <button
-                key={id}
-                onClick={() => setDifficulty(id)}
-                className={`px-2.5 py-0.5 rounded-full text-xs font-medium border transition ${
-                  difficulty === id
-                    ? active
-                    : `bg-white text-slate-400 border-slate-200 ${idle}`
-                }`}
-              >
-                {label}
-              </button>
-            ))}
+          {/* Difficulty ratio inputs */}
+          <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-slate-400 whitespace-nowrap">Difficulty Ratio (E/M/H %):</span>
+              {[
+                { label: 'E', val: easyRatio, set: setEasyRatio, color: 'focus:border-emerald-500' },
+                { label: 'M', val: mediumRatio, set: setMediumRatio, color: 'focus:border-amber-500' },
+                { label: 'H', val: hardRatio, set: setHardRatio, color: 'focus:border-red-500' },
+              ].map(({ label, val, set, color }) => (
+                <label key={label} className="flex items-center gap-0.5 text-[11px] text-slate-500">
+                  <span>{label}</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={val}
+                    onChange={(e) => set(Math.max(0, Math.min(100, parseInt(e.target.value) || 0)))}
+                    className={`w-12 bg-white border border-slate-300 rounded px-1 py-0.5 text-center text-xs text-slate-800 outline-none ${color} transition`}
+                  />
+                  <span>%</span>
+                </label>
+              ))}
+              {easyRatio + mediumRatio + hardRatio !== 100 && (
+                <span className="text-[11px] text-red-400 ml-1">
+                  ≠ 100%
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -706,12 +816,13 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
             className="hidden"
           />
           <textarea
-            rows={2}
+            ref={textareaRef}
+            rows={1}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Additional instructions (optional) — e.g. focus on Chapter 3, use simple language…"
-            className="flex-1 bg-transparent resize-none outline-none text-sm text-slate-700 placeholder-slate-400 max-h-32 py-1.5"
+            className="flex-1 bg-transparent resize-none outline-none text-sm text-slate-700 placeholder-slate-400 max-h-40 py-1.5"
           />
           {loading ? (
             <button

@@ -11,6 +11,18 @@ export default function GeneralChatPanel({ conversationId, onNewConversation }) 
   const abortRef = useRef(null);
   const activeConvRef = useRef(conversationId);
   const bottomRef = useRef(null);
+  const textareaRef = useRef(null);
+
+  // Auto-expand textarea height; show scrollbar once it exceeds MAX_H
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const MAX_H = 160;
+    el.style.height = 'auto';
+    const newH = Math.min(el.scrollHeight, MAX_H);
+    el.style.height = `${newH}px`;
+    el.style.overflowY = el.scrollHeight > MAX_H ? 'auto' : 'hidden';
+  }, [input]);
 
   useEffect(() => {
     if (conversationId !== activeConvRef.current) {
@@ -195,12 +207,13 @@ export default function GeneralChatPanel({ conversationId, onNewConversation }) 
       <div className="shrink-0 border-t border-slate-200 px-6 py-4">
         <div className="flex items-end gap-2 bg-white rounded-xl px-4 py-2 border border-slate-200 focus-within:border-violet-500 shadow-sm transition">
           <textarea
+            ref={textareaRef}
             rows={1}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Type a message…"
-            className="flex-1 bg-transparent resize-none outline-none text-sm text-slate-800 placeholder-slate-400 max-h-32 py-1.5"
+            className="flex-1 bg-transparent resize-none outline-none text-sm text-slate-800 placeholder-slate-400 max-h-40 py-1.5"
           />
           {loading ? (
             <button

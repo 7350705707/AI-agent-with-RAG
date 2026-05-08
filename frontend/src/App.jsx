@@ -1,12 +1,12 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
-import ChatPanel from './components/ChatPanel';
-import GeneralChatPanel from './components/GeneralChatPanel';
-import ExamPanel from './components/ExamPanel';
-import AdminPanel from './components/AdminPanel';
-import KnowledgePanel from './components/KnowledgePanel';
-import LoginPage from './components/LoginPage';
-import AboutPage from './components/AboutPage';
+import ChatPanel from './views/ChatPanel';
+import GeneralChatPanel from './views/GeneralChatPanel';
+import ExamPanel from './views/ExamPanel';
+import AdminPanel from './views/AdminPanel';
+import KnowledgePanel from './views/KnowledgePanel';
+import LoginPage from './views/LoginPage';
+import AboutPage from './views/AboutPage';
 import { getStoredUser, logout as apiLogout, getToken } from './api';
 
 export default function App() {
@@ -17,6 +17,31 @@ export default function App() {
   const [showAuth, setShowAuth] = useState(false);
 
   const isLoggedIn = !!(getToken() && user);
+
+  // ── Session inactivity timeout (30 minutes) ──────────────────────────
+  const INACTIVITY_MS = 30 * 60 * 1000;
+  const inactivityTimer = useRef(null);
+
+  const resetInactivityTimer = useCallback(() => {
+    if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
+    if (!isLoggedIn) return;
+    inactivityTimer.current = setTimeout(() => {
+      apiLogout();
+      setUser(null);
+      setActiveAgent('general');
+      setActiveConversation(null);
+    }, INACTIVITY_MS);
+  }, [isLoggedIn]);
+
+  useEffect(() => {
+    const events = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
+    events.forEach((e) => window.addEventListener(e, resetInactivityTimer, { passive: true }));
+    resetInactivityTimer();
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, resetInactivityTimer));
+      if (inactivityTimer.current) clearTimeout(inactivityTimer.current);
+    };
+  }, [resetInactivityTimer]);
 
   // If user explicitly clicked Sign In / Sign Up, show auth page
   if (showAuth && !isLoggedIn) {

@@ -1,8 +1,10 @@
-"""Prompt templates for both agents."""
-
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-
-# ── General Chat Agent ─────────────────────────────────────────────────────
+"""Backward-compatibility shim — import from app.utils.prompts instead."""
+from app.utils.prompts import *  # noqa: F401,F403
+from app.utils.prompts import (  # noqa: F401
+    GENERAL_CHAT_PROMPT, GENERAL_CHAT_RAG_PROMPT,
+    QUERY_ANALYSIS_PROMPT, QUERY_NORMALIZATION_PROMPT,
+    KEYWORD_EXPANSION_PROMPT, EXAM_PROMPT, EXAM_PROMPT_NO_DOCS,
+)
 GENERAL_CHAT_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
@@ -11,6 +13,8 @@ GENERAL_CHAT_PROMPT = ChatPromptTemplate.from_messages(
             "Answer questions clearly and concisely. "
             "For general knowledge questions, provide context and examples from an Indian perspective where applicable — "
             "use Indian geography, history, culture, laws, currency (₹), and current events as reference points. "
+            "CONVERSATION MEMORY: If the user asks something personal (e.g. 'what is my name?', 'what did I say earlier?'), "
+            "look in the conversation history provided and answer directly from it. "
             "If you don't know, say so.",
         ),
         MessagesPlaceholder(variable_name="history"),
@@ -39,7 +43,9 @@ GENERAL_CHAT_RAG_PROMPT = ChatPromptTemplate.from_messages(
             "8. NEVER invent or guess document content. If you are uncertain whether a fact came from the document, do not cite the document.\n"
             "9. For general knowledge, use an Indian perspective where applicable "
             "(Indian geography, history, culture, laws, currency ₹, current events).\n"
-            "10. Never say 'based on the context' — speak directly and confidently.\n\n"
+            "10. Never say 'based on the context' — speak directly and confidently.\n"
+            "11. CONVERSATION MEMORY: If the user asks something personal (e.g. 'what is my name?', 'what did I say earlier?'), "
+            "look in the conversation history provided and answer directly from it — do NOT search the documents for it.\n\n"
             "REFERENCE MATERIAL:\n\n{context}",
         ),
         MessagesPlaceholder(variable_name="history"),
@@ -58,6 +64,23 @@ QUERY_ANALYSIS_PROMPT = ChatPromptTemplate.from_messages(
             "Output ONLY 8-12 keywords or a short phrase that captures what the user wants to find. "
             "Include domain-specific synonyms and alternate phrasings the document might use. "
             "No explanation, no punctuation, no extra text — just the keywords.",
+        ),
+        ("human", "{input}"),
+    ]
+)
+
+# ── Spell / typo correction before vector search ──────────────────────────
+QUERY_NORMALIZATION_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You are a spelling corrector for a document search system. "
+            "Fix any obvious spelling mistakes or typos in the user's query so it matches the correct technical terminology. "
+            "Output ONLY the corrected query — no explanation, no extra text, no punctuation changes. "
+            "If the query is already correct, output it unchanged. "
+            "Examples: 'hardware spare phishing' → 'hardware spear phishing', "
+            "'phising attack' → 'phishing attack', 'sql injeksion' → 'SQL injection', "
+            "'cross site sripting' → 'cross site scripting'.",
         ),
         ("human", "{input}"),
     ]
