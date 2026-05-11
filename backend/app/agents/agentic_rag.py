@@ -53,7 +53,6 @@ from app.utils.history_store import (
     get_recent_exchanges,
     search_history,
     search_history_for_user,
-    tokenize,
 )
 
 log = logging.getLogger(__name__)
@@ -61,16 +60,6 @@ log = logging.getLogger(__name__)
 MAX_AGENT_ITERATIONS = 5
 MAX_SEARCH_CHARS = 3000
 _MAX_HIST_CHARS = 800
-
-# Stop-words that indicate vague follow-ups — not substantive enough for cross-turn search
-_FOLLOWUP_STOP = frozenset({
-    "give", "more", "tell", "explain", "describe", "elaborate", "continue",
-    "please", "further", "expand", "summarize", "brief", "details", "detail",
-    "about", "again", "show", "write", "list", "provide", "share", "yes",
-    "okay", "sure", "thanks", "thank", "got", "understand", "understood",
-    "need", "use", "using", "used", "way", "ways", "thing", "things",
-    "help", "helpful", "good", "better", "best", "different", "same",
-})
 
 # ── Tool JSON schemas exposed to the LLM ──────────────────────────────────
 
@@ -117,6 +106,29 @@ AGENT_TOOLS = [
                     "query": {
                         "type": "string",
                         "description": "The original query to expand with related terms.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_conversation_history",
+            "description": (
+                "Search the user's past conversation history for relevant exchanges. "
+                "Call this when the user refers to a previous discussion: "
+                "'last time', 'before', 'remind me', 'what did I learn about X', "
+                "'previously', 'we discussed', 'you explained', 'we covered'. "
+                "Returns matching past Q&A pairs so you can recall and build on them."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Topic or keywords from the past conversation to search for (3-8 words).",
                     },
                 },
                 "required": ["query"],
@@ -184,8 +196,44 @@ def _tool_expand_search_keywords(query: str) -> str:
         return query
 
 
+def _tool_search_conversation_history(
+    query: str,
+    user_id: str | None,
+    conversation_id: str,
+) -> str:
+    """Search past conversation history for relevant exchanges on a topic.
+
+    Dispatched inline (not via _dispatch_tool) because it requires runtime
+    context values user_id and conversation_id that the LLM cannot supply.
+    """
+    if not query.strip():
+        return "No query provided for history search."
+
+    results = (
+        search_history_for_user(user_id, query, top_k=3)
+        if user_id
+        else search_history(conversation_id, query, top_k=3)
+    )
+
+    if not results:
+        return f"No past conversations found about '{query}'."
+
+    parts: list[str] = []
+    for i, ex in enumerate(results, 1):
+        u = ex["user"][:400]
+        a = ex["assistant"][:600]
+        parts.append(
+            f"[Past exchange {i}]\nUser asked: {u}\nAssistant answered: {a}"
+        )
+    return "\n\n---\n\n".join(parts)
+
+
 def _dispatch_tool(name: str, args: dict) -> str:
-    """Route a tool call to its implementation and return a string result."""
+    """Route a tool call to its implementation and return a string result.
+
+    Note: search_conversation_history requires runtime context (user_id,
+    conversation_id) and is dispatched inline in the run_ functions instead.
+    """
     if name == "search_knowledge_base":
         return _tool_search_knowledge_base(**args)
     if name == "expand_search_keywords":
@@ -195,53 +243,20 @@ def _dispatch_tool(name: str, args: dict) -> str:
 
 # ── Conversation history helpers ─────────────────────────────────────────
 
-def _is_substantive_query(query: str, min_tokens: int = 2) -> bool:
-    """Return True when the query has enough unique topic words for cross-turn search.
+def _build_history(conversation_id: str) -> list:
+    """Layer 1 of the hybrid history architecture.
 
-    Vague follow-ups like 'explain more', 'give details', 'tell me again' produce
-    0-1 content words after stop-word removal → return False → only recent turns used.
+    Always injects the last 2 turns so follow-up questions
+    ('explain more', 'give an example') always have immediate context.
+    Fast: reads a single markdown file, no extra LLM call required.
+
+    Layer 2 — cross-session relevance recall — is handled by the
+    search_conversation_history tool, which the LLM calls autonomously
+    when the user explicitly references past discussions.
     """
-    words = tokenize(query) - _FOLLOWUP_STOP
-    return len(words) >= min_tokens
-
-
-def _build_history(
-    conversation_id: str,
-    query: str = "",
-    user_id: str | None = None,
-    max_pairs: int = 4,
-) -> list:
-    """Build LangChain message history by combining two sources:
-
-    1. **Recent exchanges** (always included) — the last 2 turns of THIS conversation
-       so that follow-up questions always have immediate context.
-    2. **Relevant past exchanges** (when query is substantive) — searched by
-       Jaccard word-overlap across the current conversation (or all conversations
-       of the user when user_id is provided), so topic-relevant prior answers
-       are injected even if they happened many turns ago.
-
-    Deduplication ensures the same exchange is not injected twice.
-    """
-    # Step 1: anchor on the most recent turns (guaranteed context)
-    recent = get_recent_exchanges(conversation_id, n=2)
-    recent_keys = {(e["user"], e["assistant"]) for e in recent}
-
-    # Step 2: relevance search only for substantive queries
-    extra: list = []
-    if query and _is_substantive_query(query):
-        if user_id:
-            # Search across ALL this user's conversations
-            scored = search_history_for_user(user_id, query, top_k=max_pairs)
-        else:
-            # Search within this conversation only
-            scored = search_history(conversation_id, query, top_k=max_pairs)
-        extra = [e for e in scored if (e["user"], e["assistant"]) not in recent_keys]
-
-    # Step 3: merge (recent first), deduplicate, cap
-    combined = (recent + extra)[:max_pairs]
-
+    exchanges = get_recent_exchanges(conversation_id, n=2)
     messages: list = []
-    for ex in combined:
+    for ex in exchanges:
         u = ex["user"]
         a = ex["assistant"]
         if len(u) > _MAX_HIST_CHARS:
@@ -271,8 +286,11 @@ def _raw_llm(temperature: float = 0.5, streaming: bool = False) -> ChatOpenAI:
 _SYSTEM_PROMPT = (
     "You are a helpful AI assistant with access to a knowledge base of uploaded documents.\n\n"
     "DECISION RULE — use your own judgment each time:\n"
-    "- If the question is about general knowledge you are already confident. "
+    "- If the question is about general knowledge you are already confident about, "
     "answer DIRECTLY from your own knowledge WITHOUT calling any tool.\n"
+    "- If the user refers to a past discussion ('last time', 'before', 'remind me', "
+    "'what did I learn about X', 'previously', 'you explained', 'we covered'), "
+    "call search_conversation_history FIRST to retrieve relevant past exchanges.\n"
     "- If the question is about specific uploaded documents, technical details you are "
     "uncertain about, or information that is likely in the knowledge base, "
     "call search_knowledge_base FIRST, then answer.\n"
@@ -312,7 +330,7 @@ def run_agentic_chat(
     max_iterations: int = MAX_AGENT_ITERATIONS,
 ) -> str:
     """Run the full agentic tool-calling loop and return the final text response."""
-    history = _build_history(conversation_id, query=user_input, user_id=user_id)
+    history = _build_history(conversation_id)
     system_msgs: list = [SystemMessage(content=_SYSTEM_PROMPT)]
     if _detect_explicit_search_intent(user_input):
         log.info("Explicit search intent detected — injecting force-search override.")
@@ -332,10 +350,15 @@ def run_agentic_chat(
                     return response.content or ""
 
                 for tc in tool_calls:
-                    result = _dispatch_tool(tc["name"], tc["args"])
+                    if tc["name"] == "search_conversation_history":
+                        result = _tool_search_conversation_history(
+                            tc["args"].get("query", ""), user_id, conversation_id
+                        )
+                    else:
+                        result = _dispatch_tool(tc["name"], tc["args"])
                     log.info(
-                        "Agent[iter=%d] tool=%s args=%s → %d chars",
-                        iteration, tc["name"], tc["args"], len(result),
+                        "Agent[iter=%d] tool=%s → %d chars",
+                        iteration, tc["name"], len(result),
                     )
                     messages.append(
                         ToolMessage(
@@ -375,7 +398,7 @@ def run_agentic_chat_stream(
 
     The caller (router) is responsible for saving history and sending SSE.
     """
-    history = _build_history(conversation_id, query=user_input, user_id=user_id)
+    history = _build_history(conversation_id)
     system_msgs: list = [SystemMessage(content=_SYSTEM_PROMPT)]
     if _detect_explicit_search_intent(user_input):
         log.info("Explicit search intent detected — injecting force-search override.")
@@ -407,14 +430,24 @@ def run_agentic_chat_stream(
                     if stop_event and stop_event.is_set():
                         return
 
-                    # Build a human-readable label for the UI
-                    args = tc.get("args", {})
-                    args_str = ", ".join(f"{k}={repr(v)[:50]}" for k, v in args.items())
-                    yield ("thinking", f"{tc['name']}({args_str})", [])
+                    args = tc.get("args") or {}
 
+                    # Build a friendly label for the UI — do NOT expose query text
+                    tool_labels = {
+                        "search_knowledge_base": "Searching database…",
+                        "expand_search_keywords": "Expanding search keywords…",
+                        "search_conversation_history": "Searching conversation history…",
+                    }
+                    yield ("thinking", tool_labels.get(tc["name"], f"Running {tc['name']}…"), [])
+
+                    # search_conversation_history needs runtime context — dispatch inline
+                    if tc["name"] == "search_conversation_history":
+                        result = _tool_search_conversation_history(
+                            args.get("query", ""), user_id, conversation_id
+                        )
                     # For search_knowledge_base: collect real doc_id + filename directly
                     # from raw results BEFORE formatting, so sources are accurate.
-                    if tc["name"] == "search_knowledge_base":
+                    elif tc["name"] == "search_knowledge_base":
                         raw_results = search_knowledge(
                             args.get("query", ""),
                             limit=min(max(1, int(args.get("limit", 5))), 10),
