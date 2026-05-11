@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import {
-  MessageSquare,
   FileText,
   Plus,
   Trash2,
@@ -9,7 +8,6 @@ import {
   Bot,
   Shield,
   LogOut,
-  LogIn,
   User,
   BookOpen,
   Info,
@@ -18,7 +16,6 @@ import { listConversations, createConversation, deleteConversation } from '../ap
 import ModelSelector from './ModelSelector';
 
 const ALL_AGENTS = [
-  { id: 'general', label: 'General AI Chat', icon: MessageSquare },
   { id: 'chat', label: 'RAG AI Chat', icon: Bot },
   { id: 'exam', label: 'Exam Paper Generator', icon: FileText },
   { id: 'knowledge', label: 'Library Base', icon: BookOpen },
@@ -33,14 +30,11 @@ export default function Sidebar({
   toggle,
   user,
   onLogout,
-  onShowAuth,
 }) {
   const [conversations, setConversations] = useState([]);
 
-  // 'general' is always visible; other agents filtered by user assignment
-  const agents = user
-    ? ALL_AGENTS.filter((a) => a.id === 'general' || user.agents?.includes(a.id))
-    : ALL_AGENTS.filter((a) => a.id === 'general');
+  // user is always logged in — filter agents by assignment
+  const agents = ALL_AGENTS.filter((a) => a.id === 'chat' || user?.agents?.includes(a.id));
 
   const refresh = async () => {
     try {
@@ -202,36 +196,24 @@ export default function Sidebar({
 
           {/* Bottom section */}
           <div className="shrink-0 border-t border-indigo-900/60 px-3 py-3">
-            {user ? (
-              /* Logged-in: show user info & logout */
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center shrink-0">
-                    <User size={14} className="text-indigo-200" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs text-white font-medium truncate">{user.username}</p>
-                    <p className="text-[10px] text-indigo-300/80 capitalize">{user.role}</p>
-                  </div>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="w-7 h-7 rounded-full bg-indigo-600 flex items-center justify-center shrink-0">
+                  <User size={14} className="text-indigo-200" />
                 </div>
-                <button
-                  onClick={onLogout}
-                  className="p-1.5 rounded hover:bg-indigo-800 text-indigo-400 hover:text-red-400 transition"
-                  title="Sign out"
-                >
-                  <LogOut size={14} />
-                </button>
+                <div className="min-w-0">
+                  <p className="text-xs text-white font-medium truncate">{user?.username}</p>
+                  <p className="text-[10px] text-indigo-300/80 capitalize">{user?.role}</p>
+                </div>
               </div>
-            ) : (
-              /* Guest: show sign in / sign up button */
               <button
-                onClick={onShowAuth}
-                className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-medium transition"
+                onClick={onLogout}
+                className="p-1.5 rounded hover:bg-indigo-800 text-indigo-400 hover:text-red-400 transition"
+                title="Sign out"
               >
-                <LogIn size={14} />
-                Sign In / Sign Up
+                <LogOut size={14} />
               </button>
-            )}
+            </div>
           </div>
         </>
       )}

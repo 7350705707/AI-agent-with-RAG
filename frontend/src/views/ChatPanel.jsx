@@ -1,6 +1,6 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
-import { Send, Loader2, MessageSquare, FileDown, Square } from 'lucide-react';
-import { sendChatStream, getMessages, createConversation, getKnowledgeDocUrl } from '../api';
+import { Send, Loader2, MessageSquare, FileDown, Square, Wrench } from 'lucide-react';
+import { sendAgenticChatStream, getMessages, createConversation, getKnowledgeDocUrl } from '../api';
 import MessageBubble from '../components/MessageBubble';
 
 export default function ChatPanel({ conversationId, onNewConversation }) {
@@ -8,6 +8,7 @@ export default function ChatPanel({ conversationId, onNewConversation }) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [streamContent, setStreamContent] = useState('');
+  const [thinkingStep, setThinkingStep] = useState('');
   const abortRef = useRef(null);
   const activeConvRef = useRef(conversationId);
   const bottomRef = useRef(null);
@@ -82,7 +83,7 @@ export default function ChatPanel({ conversationId, onNewConversation }) {
     try {
       let fullResponse = '';
       let sources = [];
-      await sendChatStream(convId, text, (data) => {
+      await sendAgenticChatStream(convId, text, (data) => {
         if (controller.signal.aborted || activeConvRef.current !== targetConvId) return;
         if (data.queued) {
           setStreamContent('\u23F3 Waiting for model to be available\u2026');
@@ -91,12 +92,18 @@ export default function ChatPanel({ conversationId, onNewConversation }) {
         if (data.error) {
           fullResponse = `\u26A0 Error: ${data.error}`;
           setStreamContent(fullResponse);
+          setThinkingStep('');
+          return;
+        }
+        if (data.thinking) {
+          setThinkingStep(data.thinking);
           return;
         }
         if (data.sources) {
           sources = data.sources;
         }
         if (data.token) {
+          setThinkingStep('');
           if (!fullResponse) setStreamContent('');  // clear queued message
           fullResponse += data.token;
           setStreamContent(fullResponse);
@@ -124,6 +131,7 @@ export default function ChatPanel({ conversationId, onNewConversation }) {
       if (activeConvRef.current === targetConvId) {
         setLoading(false);
         setStreamContent('');
+        setThinkingStep('');
       }
       abortRef.current = null;
     }
@@ -131,6 +139,7 @@ export default function ChatPanel({ conversationId, onNewConversation }) {
 
   const handleStop = () => {
     abortRef.current?.abort();
+    setThinkingStep('');
   };
 
   const handleKeyDown = (e) => {
@@ -205,26 +214,41 @@ export default function ChatPanel({ conversationId, onNewConversation }) {
             <MessageBubble role={m.role} content={m.content} />
             {m.sources && m.sources.length > 0 && (
               <div className="ml-11 -mt-2 mb-4 flex flex-wrap gap-2">
-                <span className="text-xs text-gray-500">ðŸ“š Sources:</span>
-                {m.sources.map((s) => (
-                  <a
-                    key={s.doc_id}
-                    href={getKnowledgeDocUrl(s.doc_id)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-blue-400 hover:text-blue-300 underline underline-offset-2"
-                  >
-                    {s.filename}
-                  </a>
-                ))}
+                <span className="text-xs text-gray-500">📚 Sources:</span>
+                {m.sources.map((s) =>
+                  s.doc_id ? (
+                    <a
+                      key={s.doc_id}
+                      href={getKnowledgeDocUrl(s.doc_id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-blue-400 hover:text-blue-300 underline underline-offset-2"
+                    >
+                      {s.filename}
+                    </a>
+                  ) : (
+                    <span key={s.filename} className="text-xs text-blue-400">
+                      {s.filename}
+                    </span>
+                  )
+                )}
               </div>
             )}
           </div>
         ))}
         {loading && (
-          <div className="flex items-center gap-2 text-gray-500 text-sm mb-4">
-            <Loader2 size={16} className="animate-spin" />
-            {streamContent ? '' : 'Thinking…'}
+          <div className="flex flex-col gap-1 mb-4">
+            {thinkingStep ? (
+              <div className="flex items-center gap-2 text-indigo-500 text-xs bg-indigo-50 border border-indigo-100 rounded-lg px-3 py-2 max-w-xs">
+                <Wrench size={13} className="animate-pulse shrink-0" />
+                <span className="truncate font-mono">{thinkingStep}</span>
+              </div>
+            ) : !streamContent ? (
+              <div className="flex items-center gap-2 text-gray-500 text-sm">
+                <Loader2 size={16} className="animate-spin" />
+                Thinking…
+              </div>
+            ) : null}
           </div>
         )}
         {loading && streamContent && (

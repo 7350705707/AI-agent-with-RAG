@@ -9,7 +9,7 @@ export default function ModelSelector() {
   const [loading, setLoading] = useState(false);
   const ref = useRef(null);
 
-  const DEFAULT_MODEL = 'nvidia/nemotron-3-nano-4b';
+  const DEFAULT_MODEL = 'qwen2.5-7b-instruct-1m';
 
   const fetchModels = async () => {
     setLoading(true);

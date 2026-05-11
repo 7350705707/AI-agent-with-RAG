@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mobile Forensics – Exam Paper</title>
+  <style>
+    /* ── Reset & base ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: #f0f4f8;
+      color: #1a202c;
+      padding: 24px 16px 60px;
+    }
+
+    /* ── Wrapper ── */
+    .paper {
+      max-width: 860px;
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,.10);
+      padding: 48px 56px;
+    }
+
+    /* ── Header ── */
+    .header {
+      text-align: center;
+      border-bottom: 3px solid #2d3748;
+      padding-bottom: 20px;
+      margin-bottom: 28px;
+    }
+    .header h1 { font-size: 1.7rem; letter-spacing: .5px; color: #1a202c; }
+    .header h2 { font-size: 1.1rem; font-weight: 500; color: #4a5568; margin-top: 6px; }
+    .header .meta {
+      display: flex;
+      justify-content: center;
+      gap: 40px;
+      margin-top: 14px;
+      font-size: .9rem;
+      color: #718096;
+    }
+
+    /* ── Difficulty legend ── */
+    .legend {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 30px;
+      justify-content: center;
+    }
+    .badge {
+      padding: 4px 14px;
+      border-radius: 20px;
+      font-size: .78rem;
+      font-weight: 700;
+      letter-spacing: .4px;
+    }
+    .easy   { background: #c6f6d5; color: #276749; }
+    .medium { background: #fefcbf; color: #744210; }
+    .hard   { background: #fed7d7; color: #742a2a; }
+
+    /* ── Section heading ── */
+    .section-title {
+      background: #2d3748;
+      color: #fff;
+      padding: 10px 20px;
+      border-radius: 8px;
+      font-size: 1.05rem;
+      font-weight: 700;
+      margin: 36px 0 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .section-title span { font-size: .82rem; font-weight: 500; opacity: .75; }
+
+    /* ── Question block ── */
+    .question {
+      margin-bottom: 26px;
+      padding: 16px 20px;
+      border: 1px solid #e2e8f0;
+      border-left: 5px solid #a0aec0;
+      border-radius: 8px;
+      position: relative;
+    }
+    .question.easy   { border-left-color: #48bb78; }
+    .question.medium { border-left-color: #ecc94b; }
+    .question.hard   { border-left-color: #fc8181; }
+
+    .q-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .q-num {
+      background: #2d3748;
+      color: #fff;
+      font-size: .78rem;
+      font-weight: 700;
+      padding: 2px 10px;
+      border-radius: 12px;
+      white-space: nowrap;
+      margin-top: 1px;
+    }
+    .q-text { font-size: .97rem; font-weight: 600; line-height: 1.5; }
+
+    /* difficulty pill inside question */
+    .q-diff {
+      margin-left: auto;
+      font-size: .72rem;
+      font-weight: 700;
+      padding: 2px 10px;
+      border-radius: 12px;
+      white-space: nowrap;
+    }
+
+    /* ── MCQ options ── */
+    .options { list-style: none; margin-top: 8px; padding-left: 6px; }
+    .options li {
+      padding: 6px 12px;
+      margin-bottom: 5px;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      font-size: .93rem;
+      cursor: default;
+      transition: background .15s;
+    }
+    .options li:hover { background: #f7fafc; }
+    .opt-label { font-weight: 700; color: #2b6cb0; margin-right: 8px; }
+
+    /* ── True/False ── */
+    .tf-options {
+      display: flex;
+      gap: 12px;
+      margin-top: 10px;
+    }
+    .tf-btn {
+      padding: 6px 22px;
+      border: 2px solid #bee3f8;
+      border-radius: 20px;
+      background: #ebf8ff;
+      color: #2b6cb0;
+      font-weight: 700;
+      font-size: .88rem;
+      cursor: default;
+    }
+
+    /* ── Fill in the Blank ── */
+    .blank-line {
+      display: inline-block;
+      width: 180px;
+      border-bottom: 2px solid #4a5568;
+      margin: 0 4px;
+      vertical-align: bottom;
+    }
+    .fitb-text { font-size: .95rem; line-height: 1.8; margin-top: 8px; }
+
+    /* ── Instructions box ── */
+    .instructions {
+      background: #ebf8ff;
+      border: 1px solid #bee3f8;
+      border-radius: 8px;
+      padding: 14px 20px;
+      font-size: .88rem;
+      margin-bottom: 28px;
+      color: #2c5282;
+    }
+    .instructions b { display: block; margin-bottom: 6px; font-size: .95rem; }
+
+    /* ── Export toolbar ── */
+    .toolbar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: #2d3748;
+      padding: 12px 24px;
+      display: flex;
+      justify-content: center;
+      gap: 14px;
+      z-index: 999;
+      box-shadow: 0 -4px 16px rgba(0,0,0,.25);
+    }
+    .btn {
+      padding: 10px 28px;
+      border: none;
+      border-radius: 8px;
+      font-size: .95rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+    }
+    .btn:hover   { opacity: .88; transform: translateY(-1px); }
+    .btn:active  { transform: translateY(0); }
+    .btn-primary { background: #48bb78; color: #fff; }
+    .btn-second  { background: #4299e1; color: #fff; }
+    .btn-danger  { background: #fc8181; color: #fff; }
+
+    /* ── Print styles ── */
+    @media print {
+      body { background: #fff; padding: 0; }
+      .paper { box-shadow: none; border-radius: 0; padding: 28px 36px; max-width: 100%; }
+      .toolbar { display: none !important; }
+      #answer-key { display: none !important; }
+      .question { break-inside: avoid; }
+      .section-title { break-after: avoid; }
+      .options li:hover { background: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════
+     EXAM PAPER
+══════════════════════════════════════════════ -->
+<div class="paper" id="exam-paper">
+
+  <!-- Header -->
+  <div class="header">
+    <h1>Mobile Device Forensics</h1>
+    <h2>Assessment Examination – Secret Vault Case Study</h2>
+    <div class="meta">
+      <span>Total Marks: 30</span>
+      <span>Sections: 3</span>
+      <span>Questions: 30</span>
+      <span>Date: _______________</span>
+    </div>
+  </div>
+
+  <!-- Difficulty legend -->
+  <div class="legend">
+    <span class="badge easy">🟢 Easy — 50 % (15 Qs)</span>
+    <span class="badge medium">🟡 Medium — 30 % (9 Qs)</span>
+    <span class="badge hard">🔴 Hard — 20 % (6 Qs)</span>
+  </div>
+
+  <!-- Instructions -->
+  <div class="instructions">
+    <b>General Instructions</b>
+    · Read each question carefully before answering.<br>
+    · Section A – choose ONE correct option (A–D).<br>
+    · Section B – write <em>True</em> or <em>False</em> in the space provided.<br>
+    · Section C – write the missing word(s) on the blank line.<br>
+    · No negative marking. Attempt all questions.
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SECTION A — MCQ
+  ══════════════════════════════════════════ -->
+  <div class="section-title">
+    Section A &nbsp;·&nbsp; Multiple Choice Questions
+    <span>10 Questions &nbsp;|&nbsp; 1 Mark Each</span>
+  </div>
+
+  <!-- Q1 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 1</span>
+      <span class="q-text">What was the primary reason the Panasonic mobile phone was seized and sent to the forensic lab?</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+    <ul class="options">
+      <li><span class="opt-label">A</span> To retrieve deleted multimedia files</li>
+      <li><span class="opt-label">B</span> To investigate suspected anti-national activities on social media</li>
+      <li><span class="opt-label">C</span> To test battery health and hardware performance</li>
+      <li><span class="opt-label">D</span> To upgrade its operating system software</li>
+    </ul>
+  </div>
+
+  <!-- Q2 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 2</span>
+      <span class="q-text">Which type of application was identified as malicious during the forensic analysis of the seized phone?</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+    <ul class="options">
+      <li><span class="opt-label">A</span> A standard calculator app</li>
+      <li><span class="opt-label">B</span> A Secret Vault Application disguised as a calculator</li>
+      <li><span class="opt-label">C</span> A social media messaging app</li>
+      <li><span class="opt-label">D</span> A system monitoring daemon</li>
+    </ul>
+  </div>
+
+  <!-- Q3 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 3</span>
+      <span class="q-text">How many calculator APK files were discovered on the seized phone?</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+    <ul class="options">
+      <li><span class="opt-label">A</span> 1</li>
+      <li><span class="opt-label">B</span> 2</li>
+      <li><span class="opt-label">C</span> 3</li>
+      <li><span class="opt-label">D</span> 4</li>
+    </ul>
+  </div>
+
+  <!-- Q4 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 4</span>
+      <span class="q-text">What proportion of smartphones are considered the main evidence source in digital forensic investigations, according to the document?</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+    <ul class="options">
+      <li><span class="opt-label">A</span> 10 %</li>
+      <li><span class="opt-label">B</span> 50 %</li>
+      <li><span class="opt-label">C</span> 90 %</li>
+      <li><span class="opt-label">D</span> 20 %</li>
+    </ul>
+  </div>
+
+  <!-- Q5 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 5</span>
+      <span class="q-text">What type of forensic analysis was performed on the seized Panasonic mobile phone?</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+    <ul class="options">
+      <li><span class="opt-label">A</span> Physical extraction only</li>
+      <li><span class="opt-label">B</span> Logical and file system extraction followed by APK analysis</li>
+      <li><span class="opt-label">C</span> Cloud backup analysis only</li>
+      <li><span class="opt-label">D</span> No analysis was performed</li>
+    </ul>
+  </div>
+
+  <!-- Q6 Medium -->
+  <div class="question medium">
+    <div class="q-header">
+      <span class="q-num">Q 6</span>
+      <span class="q-text">Where exactly was the configuration file containing the Secret Vault PIN stored on the device?</span>
+      <span class="q-diff badge medium">Medium</span>
+    </div>
+    <ul class="options">
+      <li><span class="opt-label">A</span> /sdcard/secretvault.xml</li>
+      <li><span class="opt-label">B</span> root/apps/com.calculator.vault/sp/com.calculator.vault_preferences.xml</li>
+      <li><span class="opt-label">C</span> internal storage/calculator.pin</li>
+      <li><span class="opt-label">D</span> /data/app/com.vault/shared_prefs/settings.xml</li>
+    </ul>
+  </div>
+
+  <!-- Q7 Medium -->
+  <div class="question medium">
+    <div class="q-header">
+      <span class="q-num">Q 7</span>
+      <span class="q-text">According to the report, what fraction of devices arriving at the forensic lab are found to be locked?</span>
+      <span class="q-diff badge medium">Medium</span>
+    </div>
+    <ul class="options">
+      <li><span class="opt-label">A</span> 2 out of 10</li>
+      <li><span class="opt-label">B</span> 4 out of 10</li>
+      <li><span class="opt-label">C</span> 6 out of 10</li>
+      <li><span class="opt-label">D</span> 8 out of 10</li>
+    </ul>
+  </div>
+
+  <!-- Q8 Medium -->
+  <div class="question medium">
+    <div class="q-header">
+      <span class="q-num">Q 8</span>
+      <span class="q-text">Which of the following is identified as the biggest challenge when extracting data during mobile phone forensics?</span>
+      <span class="q-diff badge medium">Medium</span>
+    </div>
+    <ul class="options">
+      <li><span class="opt-label">A</span> Physically damaged devices</li>
+      <li><span class="opt-label">B</span> Encrypted applications</li>
+      <li><span class="opt-label">C</span> Rapid battery drain during acquisition</li>
+      <li><span class="opt-label">D</span> Insufficient internal storage capacity</li>
+    </ul>
+  </div>
+
+  <!-- Q9 Hard -->
+  <div class="question hard">
+    <div class="q-header">
+      <span class="q-num">Q 9</span>
+      <span class="q-text">Which emerging technology does the document indicate will significantly shorten the time required for forensic analysis in law enforcement investigations?</span>
+      <span class="q-diff badge hard">Hard</span>
+    </div>
+    <ul class="options">
+      <li><span class="opt-label">A</span> Quantum computing</li>
+      <li><span class="opt-label">B</span> Artificial Intelligence (AI)</li>
+      <li><span class="opt-label">C</span> Distributed blockchain ledgers</li>
+      <li><span class="opt-label">D</span> Internet of Things (IoT) sensors</li>
+    </ul>
+  </div>
+
+  <!-- Q10 Hard -->
+  <div class="question hard">
+    <div class="q-header">
+      <span class="q-num">Q 10</span>
+      <span class="q-text">Which definition most precisely describes "Mobile Device Forensics" as stated in the document?</span>
+      <span class="q-diff badge hard">Hard</span>
+    </div>
+    <ul class="options">
+      <li><span class="opt-label">A</span> The physical disassembly of a mobile device to retrieve hardware components</li>
+      <li><span class="opt-label">B</span> The science of recovering digital evidence from a mobile phone under forensically sound conditions using accepted methods</li>
+      <li><span class="opt-label">C</span> Cloud-based synchronisation of mobile data for investigative purposes</li>
+      <li><span class="opt-label">D</span> A benchmark report published by the digital intelligence industry</li>
+    </ul>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SECTION B — TRUE / FALSE
+  ══════════════════════════════════════════ -->
+  <div class="section-title">
+    Section B &nbsp;·&nbsp; True or False
+    <span>10 Questions &nbsp;|&nbsp; 1 Mark Each</span>
+  </div>
+
+  <!-- Q11 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 11</span>
+      <span class="q-text">The forensic case involved analyzing two calculator APKs, one of which was identified as a Secret Vault application.</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+    <div class="tf-options">
+      <div class="tf-btn">True</div>
+      <div class="tf-btn">False</div>
+    </div>
+  </div>
+
+  <!-- Q12 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 12</span>
+      <span class="q-text">After performing logical and file system extraction on the seized phone, no multimedia files were found.</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+    <div class="tf-options">
+      <div class="tf-btn">True</div>
+      <div class="tf-btn">False</div>
+    </div>
+  </div>
+
+  <!-- Q13 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 13</span>
+      <span class="q-text">The PIN used to lock the Secret Vault application was stored in an XML configuration file on the device.</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+    <div class="tf-options">
+      <div class="tf-btn">True</div>
+      <div class="tf-btn">False</div>
+    </div>
+  </div>
+
+  <!-- Q14 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 14</span>
+      <span class="q-text">The Secret Vault application was confirmed to be a completely normal calculator application with no hidden functionality.</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+    <div class="tf-options">
+      <div class="tf-btn">True</div>
+      <div class="tf-btn">False</div>
+    </div>
+  </div>
+
+  <!-- Q15 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 15</span>
+      <span class="q-text">Mobile phones are described in the document as one of the main evidence sources in digital forensic investigations.</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+    <div class="tf-options">
+      <div class="tf-btn">True</div>
+      <div class="tf-btn">False</div>
+    </div>
+  </div>
+
+  <!-- Q16 Medium -->
+  <div class="question medium">
+    <div class="q-header">
+      <span class="q-num">Q 16</span>
+      <span class="q-text">Cloud-based data access is explicitly mentioned as a common challenge in mobile forensics investigations according to the document.</span>
+      <span class="q-diff badge medium">Medium</span>
+    </div>
+    <div class="tf-options">
+      <div class="tf-btn">True</div>
+      <div class="tf-btn">False</div>
+    </div>
+  </div>
+
+  <!-- Q17 Medium -->
+  <div class="question medium">
+    <div class="q-header">
+      <span class="q-num">Q 17</span>
+      <span class="q-text">According to the report, only 30 % of devices that reach the forensic lab are locked, posing minimal difficulty for data extraction.</span>
+      <span class="q-diff badge medium">Medium</span>
+    </div>
+    <div class="tf-options">
+      <div class="tf-btn">True</div>
+      <div class="tf-btn">False</div>
+    </div>
+  </div>
+
+  <!-- Q18 Medium -->
+  <div class="question medium">
+    <div class="q-header">
+      <span class="q-num">Q 18</span>
+      <span class="q-text">Extractable digital evidence from a mobile phone can include incoming/outgoing call history, phonebook entries, SMS messages, and multimedia files.</span>
+      <span class="q-diff badge medium">Medium</span>
+    </div>
+    <div class="tf-options">
+      <div class="tf-btn">True</div>
+      <div class="tf-btn">False</div>
+    </div>
+  </div>
+
+  <!-- Q19 Hard -->
+  <div class="question hard">
+    <div class="q-header">
+      <span class="q-num">Q 19</span>
+      <span class="q-text">The document states that AI technology will shorten the time required for forensic analysis, making it a key trend redefining law enforcement.</span>
+      <span class="q-diff badge hard">Hard</span>
+    </div>
+    <div class="tf-options">
+      <div class="tf-btn">True</div>
+      <div class="tf-btn">False</div>
+    </div>
+  </div>
+
+  <!-- Q20 Hard -->
+  <div class="question hard">
+    <div class="q-header">
+      <span class="q-num">Q 20</span>
+      <span class="q-text">The exact file path of the Secret Vault preferences file is: <em>root/apps/com.calculator.vault/sp/com.calculator.vault_preferences.xml</em>.</span>
+      <span class="q-diff badge hard">Hard</span>
+    </div>
+    <div class="tf-options">
+      <div class="tf-btn">True</div>
+      <div class="tf-btn">False</div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════
+       SECTION C — FILL IN THE BLANKS
+  ══════════════════════════════════════════ -->
+  <div class="section-title">
+    Section C &nbsp;·&nbsp; Fill in the Blanks
+    <span>10 Questions &nbsp;|&nbsp; 1 Mark Each</span>
+  </div>
+
+  <!-- Q21 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 21</span>
+      <span class="q-text">The seized Panasonic mobile phone was sent to the forensic lab after intelligence indicated it had been used for <span class="blank-line">&nbsp;</span> activities on social media.</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+  </div>
+
+  <!-- Q22 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 22</span>
+      <span class="q-text">After performing logical and file system extraction on the seized phone, no <span class="blank-line">&nbsp;</span> files were found.</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+  </div>
+
+  <!-- Q23 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 23</span>
+      <span class="q-text"><span class="blank-line">&nbsp;</span> calculator APK files were discovered on the phone during analysis of the installed applications.</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+  </div>
+
+  <!-- Q24 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 24</span>
+      <span class="q-text">The Secret Vault application was found to be locked with a <span class="blank-line">&nbsp;</span> that was stored in its configuration XML file.</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+  </div>
+
+  <!-- Q25 Easy -->
+  <div class="question easy">
+    <div class="q-header">
+      <span class="q-num">Q 25</span>
+      <span class="q-text">According to the document, <span class="blank-line">&nbsp;</span> % of smartphones are considered the main evidence source in digital forensic investigations.</span>
+      <span class="q-diff badge easy">Easy</span>
+    </div>
+  </div>
+
+  <!-- Q26 Medium -->
+  <div class="question medium">
+    <div class="q-header">
+      <span class="q-num">Q 26</span>
+      <span class="q-text">The full path of the Secret Vault preferences configuration file is: <em>root/apps/com.calculator.vault/sp/<span class="blank-line">&nbsp;</span></em>.</span>
+      <span class="q-diff badge medium">Medium</span>
+    </div>
+  </div>
+
+  <!-- Q27 Medium -->
+  <div class="question medium">
+    <div class="q-header">
+      <span class="q-num">Q 27</span>
+      <span class="q-text">Six out of <span class="blank-line">&nbsp;</span> devices that reach the forensic lab are locked, making data extraction a significant challenge.</span>
+      <span class="q-diff badge medium">Medium</span>
+    </div>
+  </div>
+
+  <!-- Q28 Medium -->
+  <div class="question medium">
+    <div class="q-header">
+      <span class="q-num">Q 28</span>
+      <span class="q-text">The biggest challenge in extracting data during mobile phone forensics, aside from locked devices, is dealing with <span class="blank-line">&nbsp;</span> applications.</span>
+      <span class="q-diff badge medium">Medium</span>
+    </div>
+  </div>
+
+  <!-- Q29 Hard -->
+  <div class="question hard">
+    <div class="q-header">
+      <span class="q-num">Q 29</span>
+      <span class="q-text">Mobile Device Forensics is defined as the science of recovering digital evidence from a mobile phone under <span class="blank-line">&nbsp;</span> conditions using accepted methods.</span>
+      <span class="q-diff badge hard">Hard</span>
+    </div>
+  </div>
+
+  <!-- Q30 Hard -->
+  <div class="question hard">
+    <div class="q-header">
+      <span class="q-num">Q 30</span>
+      <span class="q-text">High demand for <span class="blank-line">&nbsp;</span> is mentioned in the document as a key trend that is redefining modern law enforcement practices.</span>
+      <span class="q-diff badge hard">Hard</span>
+    </div>
+  </div>
+
+  <!-- End of paper marker -->
+  <p style="text-align:center; margin-top:40px; color:#718096; font-size:.9rem;">
+    ─── End of Examination ───
+  </p>
+
+</div><!-- /.paper -->
+
+<!-- ══════════════════════════════════════════
+     FIXED EXPORT TOOLBAR
+══════════════════════════════════════════ -->
+<div class="toolbar" id="toolbar">
+  <button class="btn btn-primary" onclick="exportPrint()">🖨 Export / Print</button>
+  <button class="btn btn-second"  onclick="exportHTML()">⬇ Download HTML</button>
+  <button class="btn btn-danger"  onclick="toggleAnswers()">📋 Show Answer Key</button>
+</div>
+
+<!-- ══════════════════════════════════════════
+     ANSWER KEY (hidden by default)
+══════════════════════════════════════════ -->
+<div id="answer-key" style="display:none; max-width:860px; margin:20px auto 80px; background:#fff; border-radius:12px; box-shadow:0 4px 24px rgba(0,0,0,.10); padding:40px 48px;">
+  <h2 style="font-size:1.3rem; margin-bottom:20px; border-bottom:2px solid #2d3748; padding-bottom:12px;">Answer Key</h2>
+
+  <h3 style="color:#2d3748; margin:16px 0 10px; font-size:1rem;">Section A – MCQ</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:.9rem;">
+    <tr style="background:#edf2f7;"><th style="padding:8px 12px; text-align:left; border:1px solid #e2e8f0;">Q</th><th style="padding:8px 12px; text-align:left; border:1px solid #e2e8f0;">Answer</th><th style="padding:8px 12px; text-align:left; border:1px solid #e2e8f0;">Difficulty</th></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q1</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">B</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q2</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">B</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q3</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">B</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q4</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">C</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q5</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">B</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q6</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#744210;">B</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge medium">Medium</span></td></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q7</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#744210;">C</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge medium">Medium</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q8</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#744210;">B</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge medium">Medium</span></td></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q9</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#742a2a;">B</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge hard">Hard</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q10</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#742a2a;">B</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge hard">Hard</span></td></tr>
+  </table>
+
+  <h3 style="color:#2d3748; margin:24px 0 10px; font-size:1rem;">Section B – True / False</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:.9rem;">
+    <tr style="background:#edf2f7;"><th style="padding:8px 12px; text-align:left; border:1px solid #e2e8f0;">Q</th><th style="padding:8px 12px; text-align:left; border:1px solid #e2e8f0;">Answer</th><th style="padding:8px 12px; text-align:left; border:1px solid #e2e8f0;">Difficulty</th></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q11</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">True</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q12</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">True</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q13</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">True</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q14</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#742a2a;">False</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q15</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">True</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q16</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">True</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge medium">Medium</span></td></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q17</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#742a2a;">False</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge medium">Medium</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q18</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">True</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge medium">Medium</span></td></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q19</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">True</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge hard">Hard</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q20</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">True</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge hard">Hard</span></td></tr>
+  </table>
+
+  <h3 style="color:#2d3748; margin:24px 0 10px; font-size:1rem;">Section C – Fill in the Blanks</h3>
+  <table style="width:100%; border-collapse:collapse; font-size:.9rem;">
+    <tr style="background:#edf2f7;"><th style="padding:8px 12px; text-align:left; border:1px solid #e2e8f0;">Q</th><th style="padding:8px 12px; text-align:left; border:1px solid #e2e8f0;">Answer</th><th style="padding:8px 12px; text-align:left; border:1px solid #e2e8f0;">Difficulty</th></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q21</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">anti-national</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q22</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">multimedia</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q23</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">Two</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q24</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">PIN</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q25</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#276749;">90</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge easy">Easy</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q26</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#744210;">com.calculator.vault_preferences.xml</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge medium">Medium</span></td></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q27</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#744210;">ten</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge medium">Medium</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q28</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#744210;">encrypted</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge medium">Medium</span></td></tr>
+    <tr><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q29</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#742a2a;">forensically sound</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge hard">Hard</span></td></tr>
+    <tr style="background:#f7fafc;"><td style="padding:7px 12px; border:1px solid #e2e8f0;">Q30</td><td style="padding:7px 12px; border:1px solid #e2e8f0; font-weight:700; color:#742a2a;">digital data analytics</td><td style="padding:7px 12px; border:1px solid #e2e8f0;"><span class="badge hard">Hard</span></td></tr>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════
+     SCRIPTS
+══════════════════════════════════════════ -->
+<script>
+  /* Print / Export to PDF — answer key is always suppressed via @media print CSS */
+  function exportPrint() {
+    window.print();
+  }
+
+  /* Download full HTML file */
+  function exportHTML() {
+    const html = document.documentElement.outerHTML;
+    const blob = new Blob([html], { type: 'text/html' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = 'Mobile_Forensics_Exam_Paper.html';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  /* Toggle answer key */
+  let answersVisible = false;
+  function toggleAnswers() {
+    answersVisible = !answersVisible;
+    const key = document.getElementById('answer-key');
+    const btn = document.querySelector('.btn-danger');
+    key.style.display = answersVisible ? 'block' : 'none';
+    btn.textContent   = answersVisible ? '🙈 Hide Answer Key' : '📋 Show Answer Key';
+  }
+</script>
+</body>
+</html>

@@ -63,6 +63,17 @@ export const sendGeneralChatStream = async (conversationId, message, onToken, si
   await _readSSEStream(res, onToken, signal);
 };
 
+// ── Agentic RAG Chat (tool-calling loop) ──────────────────────────────────
+export const sendAgenticChatStream = async (conversationId, message, onToken, signal) => {
+  const res = await fetch(`${BASE}/agentic-chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ conversation_id: conversationId, message }),
+    signal,
+  });
+  await _readSSEStream(res, onToken, signal);
+};
+
 // ── Exam ──────────────────────────────────────────────────────────────────
 export const sendExam = (conversationId, instructions, fileIds) =>
   request('/exam', {

@@ -1,5 +1,5 @@
 ﻿import React, { useState } from 'react';
-import { Bot, LogIn, UserPlus, Loader2, AlertCircle, ArrowLeft } from 'lucide-react';
+import { Bot, LogIn, UserPlus, Loader2, AlertCircle } from 'lucide-react';
 import { login, signup } from '../api';
 
 // ── Password strength calculator ─────────────────────────────────────────
@@ -20,7 +20,7 @@ function getPasswordStrength(pw) {
   return { score, ...map[score] };
 }
 
-export default function LoginPage({ onLogin, onBack }) {
+export default function LoginPage({ onLogin }) {
   const [tab, setTab] = useState('login'); // 'login' | 'signup'
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -208,16 +208,6 @@ export default function LoginPage({ onLogin, onBack }) {
               : (tab === 'login' ? 'Sign In' : 'Create Account')}
           </button>
         </form>
-
-        {onBack && (
-          <button
-            onClick={onBack}
-            className="w-full flex items-center justify-center gap-2 mt-4 text-slate-500 hover:text-slate-700 text-sm transition"
-          >
-            <ArrowLeft size={14} />
-            Continue as Guest
-          </button>
-        )}
 
         <p className="text-center text-xs text-slate-400 mt-4">
           Offline Intranet Application

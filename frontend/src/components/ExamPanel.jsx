@@ -29,26 +29,22 @@ function escapeHtml(str) {
 }
 
 function renderExamHeader(header = {}) {
-  const { subjectName, instructorName, institution, examDate, totalMarks, timeAllowed } = header;
-  const hasAny = subjectName || instructorName || institution || examDate || totalMarks || timeAllowed;
+  const { subjectName, courseName, instructorName, examDate, totalMarks, timeAllowed } = header;
+  const hasAny = subjectName || courseName || instructorName || examDate || totalMarks || timeAllowed;
   if (!hasAny) return '';
-  const cell = (label, value) => value
-    ? `<tr>
-        <td style="padding:6px 12px;font-weight:600;background:#f3f4f6;color:#374151;width:26%;white-space:nowrap;border:1px solid #d1d5db;">${escapeHtml(label)}</td>
-        <td style="padding:6px 12px;border:1px solid #d1d5db;">${escapeHtml(value)}</td>
-       </tr>`
-    : '';
-  const instRow = institution
-    ? `<tr><td colspan="2" style="padding:10px 12px;font-size:15px;font-weight:700;text-align:center;background:#f9fafb;border:1px solid #d1d5db;">${escapeHtml(institution)}</td></tr>`
-    : '';
-  return `<table style="width:100%;border-collapse:collapse;margin-bottom:24px;font-size:13px;">
-    ${instRow}
-    ${cell('Subject', subjectName)}
-    ${cell('Instructor', instructorName)}
-    ${cell('Date', examDate)}
-    ${cell('Total Marks', totalMarks)}
-    ${cell('Time Allowed', timeAllowed)}
-  </table>`;
+
+  const metaItems = [
+    totalMarks && `<span style="margin:0 20px;">Max Marks: <strong>${escapeHtml(totalMarks)}</strong></span>`,
+    timeAllowed && `<span style="margin:0 20px;">Time: <strong>${escapeHtml(timeAllowed)}</strong></span>`,
+    examDate && `<span style="margin:0 20px;">Date: <strong>${escapeHtml(examDate)}</strong></span>`,
+    instructorName && `<span style="margin:0 20px;">Instructor: <strong>${escapeHtml(instructorName)}</strong></span>`,
+  ].filter(Boolean).join('');
+
+  return `<div style="text-align:center;border-bottom:3px solid #2d3748;padding-bottom:20px;margin-bottom:28px;">
+    ${subjectName ? `<h1 style="font-size:1.7rem;letter-spacing:.5px;color:#1a202c;margin:0 0 4px;">${escapeHtml(subjectName)}</h1>` : ''}
+    ${courseName ? `<h2 style="font-size:1.1rem;font-weight:500;color:#4a5568;margin:6px 0 0;">${escapeHtml(courseName)}</h2>` : ''}
+    ${metaItems ? `<div style="display:flex;justify-content:center;flex-wrap:wrap;margin-top:14px;font-size:.9rem;color:#718096;">${metaItems}</div>` : ''}
+  </div>`;
 }
 
 function buildPrompt(mcqCount, tfCount, fitbCount, extra, ratios) {
@@ -64,66 +60,173 @@ function buildPrompt(mcqCount, tfCount, fitbCount, extra, ratios) {
   return extra.trim() ? `${base} Additional instructions: ${extra.trim()}` : base;
 }
 
-function renderQuestionsToHtml(questions) {
+// ── Shared stylesheet matching exam_paper.html ──────────────────────────────
+const EXAM_CSS = `
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Segoe UI", Arial, sans-serif; background: #f0f4f8; color: #1a202c; padding: 24px 16px 60px; }
+  .paper { max-width: 860px; margin: 0 auto; background: #fff; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,.10); padding: 48px 56px; }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 30px; justify-content: center; }
+  .badge { padding: 4px 14px; border-radius: 20px; font-size: .78rem; font-weight: 700; letter-spacing: .4px; }
+  .easy   { background: #c6f6d5; color: #276749; }
+  .medium { background: #fefcbf; color: #744210; }
+  .hard   { background: #fed7d7; color: #742a2a; }
+  .instructions { background: #ebf8ff; border: 1px solid #bee3f8; border-radius: 8px; padding: 14px 20px; font-size: .88rem; margin-bottom: 28px; color: #2c5282; }
+  .instructions b { display: block; margin-bottom: 6px; font-size: .95rem; }
+  .section-title { background: #2d3748; color: #fff; padding: 10px 20px; border-radius: 8px; font-size: 1.05rem; font-weight: 700; margin: 36px 0 20px; display: flex; align-items: center; justify-content: space-between; }
+  .section-title span { font-size: .82rem; font-weight: 500; opacity: .75; }
+  .question { margin-bottom: 26px; padding: 16px 20px; border: 1px solid #e2e8f0; border-left: 5px solid #a0aec0; border-radius: 8px; }
+  .question.easy   { border-left-color: #48bb78; }
+  .question.medium { border-left-color: #ecc94b; }
+  .question.hard   { border-left-color: #fc8181; }
+  .q-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+  .q-num { background: #2d3748; color: #fff; font-size: .78rem; font-weight: 700; padding: 2px 10px; border-radius: 12px; white-space: nowrap; margin-top: 2px; flex-shrink: 0; }
+  .q-text { font-size: .97rem; font-weight: 600; line-height: 1.5; flex: 1; }
+  .q-diff { margin-left: auto; font-size: .72rem; font-weight: 700; padding: 2px 10px; border-radius: 12px; white-space: nowrap; flex-shrink: 0; }
+  .options { list-style: none; margin-top: 8px; padding-left: 6px; }
+  .options li { padding: 6px 12px; margin-bottom: 5px; border: 1px solid #e2e8f0; border-radius: 6px; font-size: .93rem; }
+  .opt-label { font-weight: 700; color: #2b6cb0; margin-right: 8px; }
+  .tf-options { display: flex; gap: 12px; margin-top: 10px; }
+  .tf-btn { padding: 6px 22px; border: 2px solid #bee3f8; border-radius: 20px; background: #ebf8ff; color: #2b6cb0; font-weight: 700; font-size: .88rem; display: inline-block; }
+  .blank-line { display: inline-block; width: 160px; border-bottom: 2px solid #4a5568; margin: 0 4px; vertical-align: bottom; }
+  .answer-key { margin-top: 36px; padding: 20px 24px; background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+  .answer-key h3 { font-size: 1rem; color: #2d3748; margin-bottom: 14px; padding-bottom: 8px; border-bottom: 2px solid #e2e8f0; }
+  .answer-section-label { font-size: .85rem; font-weight: 600; color: #4a5568; margin: 10px 0 6px; }
+  .answer-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+  .answer-item { background: #edf2f7; border-radius: 6px; padding: 3px 10px; font-size: .82rem; color: #2d3748; }
+  @media print {
+    body { background: #fff; padding: 0; }
+    .paper { box-shadow: none; border-radius: 0; padding: 28px 36px; max-width: 100%; }
+    .question { break-inside: avoid; }
+    .section-title { break-after: avoid; }
+  }
+`;
+
+function parseOptLabel(opt) {
+  // Handles: "A. text", "A) text", "A: text", "(A) text", "A text"
+  const m = String(opt).match(/^\(?([A-Da-d])[.):\s]\)?\s*(.+)/);
+  if (m) return { label: m[1].toUpperCase(), text: m[2].trim() };
+  return { label: null, text: String(opt) };
+}
+
+function diffClass(d) {
+  if (!d) return '';
+  const dl = String(d).toLowerCase();
+  if (dl.includes('easy')) return 'easy';
+  if (dl.includes('med')) return 'medium';
+  if (dl.includes('hard')) return 'hard';
+  return '';
+}
+
+function renderQuestionsToHtml(questions, includeAnswerKey = true) {
   const sections = { mcq: [], true_false: [], fill_blank: [] };
   questions.forEach((q) => { if (sections[q.type]) sections[q.type].push(q); });
 
-  // Renumber sequentially within each section (Q1, Q2, Q3…) regardless of original numbers
   const numbered = {};
   Object.entries(sections).forEach(([type, qs]) => {
     numbered[type] = qs.map((q, i) => ({ ...q, exportNum: i + 1 }));
   });
 
-  let html = '';
-  const sectionLabels = {
-    mcq: 'Section A: Multiple Choice Questions',
-    true_false: 'Section B: True / False',
-    fill_blank: 'Section C: Fill in the Blanks',
+  const sectionMeta = {
+    mcq:        { label: 'Section A', title: 'Multiple Choice Questions', mark: '1 Mark Each' },
+    true_false: { label: 'Section B', title: 'True / False',              mark: '1 Mark Each' },
+    fill_blank: { label: 'Section C', title: 'Fill in the Blanks',        mark: '1 Mark Each' },
   };
 
+  const allQ = Object.values(numbered).flat();
+  const easyCnt  = allQ.filter(q => diffClass(q.difficulty) === 'easy').length;
+  const medCnt   = allQ.filter(q => diffClass(q.difficulty) === 'medium').length;
+  const hardCnt  = allQ.filter(q => diffClass(q.difficulty) === 'hard').length;
+
+  let html = '';
+
+  // Difficulty legend
+  if (easyCnt + medCnt + hardCnt > 0) {
+    html += `<div class="legend">`;
+    if (easyCnt) html += `<span class="badge easy">🟢 Easy \u2014 ${easyCnt} Q${easyCnt > 1 ? 's' : ''}</span>`;
+    if (medCnt)  html += `<span class="badge medium">🟡 Medium \u2014 ${medCnt} Q${medCnt > 1 ? 's' : ''}</span>`;
+    if (hardCnt) html += `<span class="badge hard">🔴 Hard \u2014 ${hardCnt} Q${hardCnt > 1 ? 's' : ''}</span>`;
+    html += `</div>`;
+  }
+
+  // Instructions box
+  const instrParts = [];
+  if (numbered.mcq.length)        instrParts.push('Section A \u2013 choose ONE correct option (A\u2013D).');
+  if (numbered.true_false.length) instrParts.push('Section B \u2013 write <em>True</em> or <em>False</em> in the space provided.');
+  if (numbered.fill_blank.length) instrParts.push('Section C \u2013 write the missing word(s) on the blank line.');
+  if (instrParts.length) {
+    html += `<div class="instructions"><b>General Instructions</b>
+      \u00b7 Read each question carefully before answering.<br>
+      \u00b7 ${instrParts.join('<br>\u00b7 ')}<br>
+      \u00b7 No negative marking. Attempt all questions.</div>`;
+  }
+
+  // Sections
   Object.entries(numbered).forEach(([type, qs]) => {
     if (!qs.length) return;
-    html += `<h2 style="margin-top:24px;font-size:15px;">${sectionLabels[type]}</h2>`;
+    const { label, title, mark } = sectionMeta[type];
+    html += `<div class="section-title">${label} &nbsp;\u00b7&nbsp; ${title}<span>${qs.length} Question${qs.length !== 1 ? 's' : ''} &nbsp;|&nbsp; ${mark}</span></div>`;
+
     qs.forEach((q) => {
-      html += `<p style="margin:10px 0 4px;"><b>Q${q.exportNum}.</b> ${q.text.replace(/</g, '&lt;')}</p>`;
-      if (type === 'mcq' && q.options.length) {
-        q.options.forEach((opt) => {
-          html += `<p style="margin:2px 0 2px 20px;">${opt.replace(/</g, '&lt;')}</p>`;
-        });
+      const dc  = diffClass(q.difficulty);
+      const txt = escapeHtml(q.text);
+      html += `<div class="question${dc ? ' ' + dc : ''}"><div class="q-header"><span class="q-num">Q ${q.exportNum}</span>`;
+
+      if (type === 'fill_blank') {
+        const fmtTxt = txt.replace(/_{2,}/g, '<span class="blank-line">&nbsp;</span>');
+        html += `<span class="q-text">${fmtTxt}</span>`;
+      } else {
+        html += `<span class="q-text">${txt}</span>`;
       }
+
+      if (dc) html += `<span class="q-diff badge ${dc}">${dc.charAt(0).toUpperCase() + dc.slice(1)}</span>`;
+      html += `</div>`; // /q-header
+
+      if (type === 'mcq' && q.options && q.options.length) {
+        const autoLabels = ['A', 'B', 'C', 'D', 'E', 'F'];
+        html += `<ul class="options">`;
+        q.options.forEach((opt, i) => {
+          const parsed = parseOptLabel(opt);
+          const lbl = parsed.label || autoLabels[i] || String.fromCharCode(65 + i);
+          html += `<li><span class="opt-label">${lbl}</span>${escapeHtml(parsed.text)}</li>`;
+        });
+        html += `</ul>`;
+      } else if (type === 'true_false') {
+        html += `<div class="tf-options"><span class="tf-btn">True</span><span class="tf-btn">False</span></div>`;
+      }
+
+      html += `</div>`; // /question
     });
   });
 
-  if (questions.some((q) => q.answer)) {
-    html += `<h2 style="margin-top:28px;font-size:15px;">Answer Key</h2>`;
+  // Answer Key
+  const hasAnswers = includeAnswerKey && questions.some((q) => q.answer);
+  if (hasAnswers) {
+    const akLabels = { mcq: 'Section A \u2013 MCQ', true_false: 'Section B \u2013 True/False', fill_blank: 'Section C \u2013 Fill in Blanks' };
+    html += `<div class="answer-key"><h3>Answer Key</h3>`;
     ['mcq', 'true_false', 'fill_blank'].forEach((type) => {
       const qs = numbered[type].filter((q) => q.answer);
       if (!qs.length) return;
-      const labels = { mcq: 'MCQ', true_false: 'True/False', fill_blank: 'Fill in Blanks' };
-      html += `<p style="margin:6px 0;"><b>${labels[type]}:</b> ${qs.map((q) => `${q.exportNum}. ${q.answer}`).join(' | ')}</p>`;
+      html += `<p class="answer-section-label">${akLabels[type]}</p><div class="answer-row">`;
+      qs.forEach((q) => { html += `<span class="answer-item">Q${q.exportNum}: ${escapeHtml(q.answer)}</span>`; });
+      html += `</div>`;
     });
+    html += `</div>`;
   }
+
   return html;
 }
 
 function exportSelectedPdf(questions, title, header = {}) {
   const win = window.open('', '_blank');
   const headerHtml = renderExamHeader(header);
-  const bodyHtml = renderQuestionsToHtml(questions);
-  win.document.write(`<!DOCTYPE html><html><head><title>${title}</title>
-    <style>
-      body{font-family:Arial,sans-serif;padding:32px;color:#111;max-width:860px;margin:0 auto;line-height:1.6;}
-      h1{font-size:18px;margin-bottom:4px;}h2{font-size:15px;}
-      .meta{color:#888;font-size:12px;margin-bottom:24px;}
-      @media print{body{padding:0}}
-    </style></head><body>
-    <h1>${title}</h1>
-    ${headerHtml}
-    ${bodyHtml}
-    </body></html>`);
+  const bodyHtml   = renderQuestionsToHtml(questions, false);
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
+    <style>${EXAM_CSS}</style></head><body><div class="paper">
+    ${headerHtml}${bodyHtml}
+    </div></body></html>`);
   win.document.close();
   win.focus();
-  setTimeout(() => { win.print(); }, 300);
+  setTimeout(() => { win.print(); }, 400);
 }
 
 function exportSelectedJson(questions, title, header = {}) {
@@ -131,15 +234,20 @@ function exportSelectedJson(questions, title, header = {}) {
   questions.forEach((q) => { if (sections[q.type]) sections[q.type].push(q); });
   const data = {
     title,
-    header,
+    subject:    header.subjectName  || '',
+    course:     header.courseName   || '',
+    instructor: header.instructorName || '',
+    date:       header.examDate     || '',
+    max_marks:  header.totalMarks   || '',
+    time:       header.timeAllowed  || '',
     exported_at: new Date().toISOString(),
     sections: Object.fromEntries(
       Object.entries(sections).map(([type, qs]) => [
         type,
         qs.map((q, i) => ({
           number: i + 1,
-          original_number: q.number,
           text: q.text,
+          difficulty: q.difficulty || '',
           ...(q.options && q.options.length ? { options: q.options } : {}),
           ...(q.answer ? { answer: q.answer } : {}),
         })),
@@ -147,9 +255,9 @@ function exportSelectedJson(questions, title, header = {}) {
     ),
   };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
   a.download = `${title.replace(/\s+/g, '_')}.json`;
   document.body.appendChild(a);
   a.click();
@@ -159,21 +267,20 @@ function exportSelectedJson(questions, title, header = {}) {
 
 function exportSelectedDoc(questions, title, header = {}) {
   const headerHtml = renderExamHeader(header);
-  const bodyHtml = renderQuestionsToHtml(questions);
+  const bodyHtml   = renderQuestionsToHtml(questions);
   const html = `<html xmlns:o='urn:schemas-microsoft-com:office:office'
     xmlns:w='urn:schemas-microsoft-com:office:word'
     xmlns='http://www.w3.org/TR/REC-html40'>
-    <head><meta charset='utf-8'><title>${title}</title>
-    <style>body{font-family:Arial,sans-serif;padding:32px;line-height:1.6;}</style></head>
-    <body><h1>${title}</h1>
-    ${headerHtml}
-    ${bodyHtml}
-    </body></html>`;
+    <head><meta charset='utf-8'><title>${escapeHtml(title)}</title>
+    <style>${EXAM_CSS}</style></head>
+    <body><div class="paper">
+    ${headerHtml}${bodyHtml}
+    </div></body></html>`;
   const blob = new Blob(['\ufeff', html], { type: 'application/msword' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${title}.doc`;
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `${title.replace(/\s+/g, '_')}.doc`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -331,12 +438,13 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
   const [showExportPanel, setShowExportPanel] = useState(false);
   // Exam paper header fields
   const [subjectName, setSubjectName] = useState('');
+  const [courseName, setCourseName] = useState('');
   const [instructorName, setInstructorName] = useState('');
-  const [institution, setInstitution] = useState('');
+
   const [examDate, setExamDate] = useState(new Date().toISOString().slice(0, 10));
   const [totalMarks, setTotalMarks] = useState('');
   const [timeAllowed, setTimeAllowed] = useState('');
-  const [showHeaderForm, setShowHeaderForm] = useState(false);
+  const [showHeaderForm, setShowHeaderForm] = useState(true);
   const abortRef = useRef(null);
   const activeConvRef = useRef(conversationId);
   const bottomRef = useRef(null);
@@ -548,35 +656,32 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
     const assistantMsgs = messages.filter((m) => m.role === 'assistant');
     if (!assistantMsgs.length) return;
     const win = window.open('', '_blank');
-    const headerHtml = renderExamHeader({ subjectName, instructorName, institution, examDate, totalMarks, timeAllowed });
+    const headerHtml = renderExamHeader({ subjectName, courseName, instructorName, examDate, totalMarks, timeAllowed });
     const sections = assistantMsgs.map((m, i) =>
-      `<h2>Exam Paper ${i + 1}</h2><pre>${m.content.replace(/</g, '&lt;')}</pre>`
-    ).join('<hr/>');
-    win.document.write(`<!DOCTYPE html><html><head><title>Exam Papers</title>
-      <style>body{font-family:Arial,sans-serif;padding:32px;max-width:860px;margin:0 auto;line-height:1.6;}
-      h2{font-size:16px;}pre{white-space:pre-wrap;font-size:14px;}hr{border-top:1px solid #ddd;margin:24px 0;}
-      .meta{color:#888;font-size:12px;margin-bottom:24px;}@media print{body{padding:0}}</style></head><body>
-      <h1>Exam Papers Export</h1>${headerHtml}
-      ${sections}</body></html>`);
+      `<div class="section-title">Exam Paper ${i + 1}</div><pre style="white-space:pre-wrap;font-size:.93rem;line-height:1.7;padding:16px 0;">${m.content.replace(/</g, '&lt;')}</pre>`
+    ).join('<hr style="border:none;border-top:1px solid #e2e8f0;margin:28px 0;"/>');
+    win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(subjectName || 'Exam Papers')}</title>
+      <style>${EXAM_CSS}</style></head><body><div class="paper">
+      ${headerHtml}${sections}
+      </div></body></html>`);
     win.document.close();
     win.focus();
-    setTimeout(() => { win.print(); }, 300);
+    setTimeout(() => { win.print(); }, 400);
   };
 
   const exportAllDoc = () => {
     const assistantMsgs = messages.filter((m) => m.role === 'assistant');
     if (!assistantMsgs.length) return;
-    const headerHtml = renderExamHeader({ subjectName, instructorName, institution, examDate, totalMarks, timeAllowed });
+    const headerHtml = renderExamHeader({ subjectName, courseName, instructorName, examDate, totalMarks, timeAllowed });
     const sections = assistantMsgs.map((m, i) =>
-      `<h2>Exam Paper ${i + 1}</h2><pre>${m.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre><hr/>`
+      `<div class="section-title">Exam Paper ${i + 1}</div><pre style="white-space:pre-wrap;font-size:11pt;line-height:1.7;">${m.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre><hr style="border:none;border-top:1px solid #ccc;margin:24px 0;"/>`
     ).join('');
     const html = `<html xmlns:o='urn:schemas-microsoft-com:office:office'
       xmlns:w='urn:schemas-microsoft-com:office:word'
       xmlns='http://www.w3.org/TR/REC-html40'>
-      <head><meta charset='utf-8'><title>Exam Papers</title>
-      <style>body{font-family:Arial,sans-serif;padding:32px;line-height:1.6;}pre{white-space:pre-wrap;font-size:13pt;}hr{border:1px solid #ccc;margin:24px 0;}</style></head>
-      <body><h1>Exam Papers Export</h1>${headerHtml}
-      ${sections}</body></html>`;
+      <head><meta charset='utf-8'><title>${escapeHtml(subjectName || 'Exam Papers')}</title>
+      <style>${EXAM_CSS}</style></head>
+      <body><div class="paper">${headerHtml}${sections}</div></body></html>`;
     const blob = new Blob(['\ufeff', html], { type: 'application/msword' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -653,9 +758,9 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
           <StructuredExamView
             key={structuredQuestions.length}
             questions={structuredQuestions}
-            onExportPdf={(qs) => exportSelectedPdf(qs, 'Exam Paper', { subjectName, instructorName, institution, examDate, totalMarks, timeAllowed })}
-            onExportDoc={(qs) => exportSelectedDoc(qs, 'Exam Paper', { subjectName, instructorName, institution, examDate, totalMarks, timeAllowed })}
-            onExportJson={(qs) => exportSelectedJson(qs, 'Exam Paper', { subjectName, instructorName, institution, examDate, totalMarks, timeAllowed })}
+            onExportPdf={(qs) => exportSelectedPdf(qs, subjectName || 'Exam Paper', { subjectName, courseName, instructorName, examDate, totalMarks, timeAllowed })}
+            onExportDoc={(qs) => exportSelectedDoc(qs, subjectName || 'Exam Paper', { subjectName, courseName, instructorName, examDate, totalMarks, timeAllowed })}
+            onExportJson={(qs) => exportSelectedJson(qs, subjectName || 'Exam Paper', { subjectName, courseName, instructorName, examDate, totalMarks, timeAllowed })}
           />
         )}
 
@@ -709,12 +814,12 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
           {showHeaderForm && (
             <div className="grid grid-cols-2 gap-3 px-4 pb-4 pt-1">
               {[
-                { label: 'Institution', value: institution, set: setInstitution, colSpan: true },
-                { label: 'Subject', value: subjectName, set: setSubjectName },
+                { label: 'Subject Name', value: subjectName, set: setSubjectName },
+                { label: 'Course Name', value: courseName, set: setCourseName },
                 { label: 'Instructor', value: instructorName, set: setInstructorName },
+                { label: 'Max Marks', value: totalMarks, set: setTotalMarks, type: 'number' },
+                { label: 'Time', value: timeAllowed, set: setTimeAllowed, placeholder: 'e.g. 90 min' },
                 { label: 'Date', value: examDate, set: setExamDate, type: 'date' },
-                { label: 'Total Marks', value: totalMarks, set: setTotalMarks, type: 'number' },
-                { label: 'Time Allowed', value: timeAllowed, set: setTimeAllowed, placeholder: 'e.g. 90 min' },
               ].map(({ label, value, set, colSpan, type, placeholder }) => (
                 <div key={label} className={colSpan ? 'col-span-2' : ''}>
                   <label className="block text-[11px] text-slate-400 mb-1">{label}</label>

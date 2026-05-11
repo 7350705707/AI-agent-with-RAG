@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatPanel from './views/ChatPanel';
-import GeneralChatPanel from './views/GeneralChatPanel';
 import ExamPanel from './views/ExamPanel';
 import AdminPanel from './views/AdminPanel';
 import KnowledgePanel from './views/KnowledgePanel';
@@ -11,10 +10,9 @@ import { getStoredUser, logout as apiLogout, getToken } from './api';
 
 export default function App() {
   const [user, setUser] = useState(() => getStoredUser());
-  const [activeAgent, setActiveAgent] = useState('general');
+  const [activeAgent, setActiveAgent] = useState('chat');
   const [activeConversation, setActiveConversation] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [showAuth, setShowAuth] = useState(false);
 
   const isLoggedIn = !!(getToken() && user);
 
@@ -28,7 +26,7 @@ export default function App() {
     inactivityTimer.current = setTimeout(() => {
       apiLogout();
       setUser(null);
-      setActiveAgent('general');
+      setActiveAgent('chat');
       setActiveConversation(null);
     }, INACTIVITY_MS);
   }, [isLoggedIn]);
@@ -43,20 +41,16 @@ export default function App() {
     };
   }, [resetInactivityTimer]);
 
-  // If user explicitly clicked Sign In / Sign Up, show auth page
-  if (showAuth && !isLoggedIn) {
+  // All users must be logged in to access the application
+  if (!isLoggedIn) {
     return (
       <LoginPage
-        onLogin={(u) => { setUser(u); setShowAuth(false); }}
-        onBack={() => setShowAuth(false)}
+        onLogin={(u) => { setUser(u); setActiveAgent('chat'); }}
       />
     );
   }
 
-  // 'general' is always available to everyone; other agents require login + assignment
-  const allowedAgents = isLoggedIn
-    ? Array.from(new Set(['general', ...(user.agents || [])]))
-    : ['general'];
+  const allowedAgents = Array.from(new Set(['chat', ...(user.agents || [])]));
 
   const handleSetAgent = (agent) => {
     setActiveAgent(agent);
@@ -66,7 +60,7 @@ export default function App() {
   const handleLogout = () => {
     apiLogout();
     setUser(null);
-    setActiveAgent('general');
+    setActiveAgent('chat');
     setActiveConversation(null);
   };
 
@@ -74,15 +68,7 @@ export default function App() {
     if (activeAgent === 'about') {
       return <AboutPage />;
     }
-    if (activeAgent === 'general') {
-      return (
-        <GeneralChatPanel
-          conversationId={activeConversation}
-          onNewConversation={setActiveConversation}
-        />
-      );
-    }
-    if (activeAgent === 'admin' && isLoggedIn && user.role === 'admin') {
+    if (activeAgent === 'admin' && user.role === 'admin') {
       return <AdminPanel />;
     }
     if (activeAgent === 'knowledge' && allowedAgents.includes('knowledge')) {
@@ -120,9 +106,8 @@ export default function App() {
         setActiveConversation={setActiveConversation}
         isOpen={sidebarOpen}
         toggle={() => setSidebarOpen(!sidebarOpen)}
-        user={isLoggedIn ? user : null}
+        user={user}
         onLogout={handleLogout}
-        onShowAuth={() => setShowAuth(true)}
       />
 
       <main className="flex-1 flex flex-col min-w-0">

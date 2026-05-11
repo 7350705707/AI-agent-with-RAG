@@ -64,7 +64,7 @@ function buildPrompt(mcqCount, tfCount, fitbCount, extra, ratios) {
   return extra.trim() ? `${base} Additional instructions: ${extra.trim()}` : base;
 }
 
-function renderQuestionsToHtml(questions) {
+function renderQuestionsToHtml(questions, includeAnswerKey = true) {
   const sections = { mcq: [], true_false: [], fill_blank: [] };
   questions.forEach((q) => { if (sections[q.type]) sections[q.type].push(q); });
 
@@ -94,7 +94,7 @@ function renderQuestionsToHtml(questions) {
     });
   });
 
-  if (questions.some((q) => q.answer)) {
+  if (includeAnswerKey && questions.some((q) => q.answer)) {
     html += `<h2 style="margin-top:28px;font-size:15px;">Answer Key</h2>`;
     ['mcq', 'true_false', 'fill_blank'].forEach((type) => {
       const qs = numbered[type].filter((q) => q.answer);
@@ -109,7 +109,7 @@ function renderQuestionsToHtml(questions) {
 function exportSelectedPdf(questions, title, header = {}) {
   const win = window.open('', '_blank');
   const headerHtml = renderExamHeader(header);
-  const bodyHtml = renderQuestionsToHtml(questions);
+  const bodyHtml = renderQuestionsToHtml(questions, false);
   win.document.write(`<!DOCTYPE html><html><head><title>${title}</title>
     <style>
       body{font-family:Arial,sans-serif;padding:32px;color:#111;max-width:860px;margin:0 auto;line-height:1.6;}

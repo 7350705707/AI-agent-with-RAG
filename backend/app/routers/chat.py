@@ -13,6 +13,7 @@ import threading
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from app.agents.agentic_rag import run_agentic_chat, run_agentic_chat_stream
 from app.agents.chat_agent import run_chat, run_chat_stream, run_general_chat_stream
 from app.auth import get_optional_user
 from app.database import add_message
@@ -188,6 +189,121 @@ async def api_general_chat_stream(
             _state.llm_inflight -= 1
             if full_response and not stop_event.is_set():
                 add_message(conv_id, "assistant", full_response)
+                append_exchange(conv_id, body.message, full_response)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── Agentic RAG Chat (non-streaming) ──────────────────────────────────────
+@router.post("/agentic-chat")
+def api_agentic_chat(body: ChatRequest, _user: dict | None = Depends(get_optional_user)):
+    """Agentic tool-calling loop: LLM decides when/how to search documents."""
+    body.message = sanitize_user_input(body.message)
+    add_message(body.conversation_id, "user", body.message)
+    user_id = _user["sub"] if _user else None
+    log.info("Agentic chat request conv_id=%s", body.conversation_id)
+    try:
+        response = run_agentic_chat(body.conversation_id, body.message, user_id=user_id)
+    except Exception as e:
+        log.error("Agentic chat error conv_id=%s: %s", body.conversation_id, e, exc_info=True)
+        raise HTTPException(500, f"LLM error: {e}")
+    add_message(body.conversation_id, "assistant", response)
+    return {"conversation_id": body.conversation_id, "response": response}
+
+
+# ── Agentic RAG Chat (streaming) ───────────────────────────────────────────
+@router.post("/agentic-chat/stream")
+async def api_agentic_chat_stream(
+    request: Request,
+    body: ChatRequest,
+    _user: dict | None = Depends(get_optional_user),
+):
+    """Streaming agentic tool-calling loop via SSE.
+
+    SSE event shapes:
+      {"thinking": "<tool>(<args>)", "done": false}   — tool invocation step
+      {"token": "<text>",           "done": false}   — streamed answer chunk
+      {"token": "",                 "done": true, "sources": [...]}
+      {"token": "",                 "done": true, "error": "..."}
+      {"token": "",                 "done": false, "queued": true}
+    """
+    body.message = sanitize_user_input(body.message)
+    add_message(body.conversation_id, "user", body.message)
+    conv_id = body.conversation_id
+    user_id = _user["sub"] if _user else None
+
+    stop_event = threading.Event()
+    q: _queue.Queue = _queue.Queue()
+
+    def _run() -> None:
+        full = ""
+        all_sources: list = []
+        try:
+            for kind, data, sources in run_agentic_chat_stream(
+                conv_id, body.message, stop_event, user_id=user_id
+            ):
+                if stop_event.is_set():
+                    break
+                if kind == "thinking":
+                    q.put(("thinking", data, []))
+                elif kind == "token":
+                    full += data
+                    if sources:
+                        all_sources = sources
+                    q.put(("token", data, sources))
+            # Pass all retrieved sources — they are authentic (came from actual tool calls).
+            # Do not filter by filename-in-text: smaller local LLMs often paraphrase
+            # citations rather than writing the exact filename, which would silently
+            # drop every source reference shown to the user.
+            q.put(("done", full, all_sources))
+        except Exception as exc:
+            q.put(("error", str(exc), []))
+
+    async def event_stream():
+        full_response = ""
+        cited_sources: list = []
+
+        if _state.llm_inflight >= _state.LLM_QUEUE_MAX:
+            yield f"data: {json.dumps({'token': '', 'done': True, 'error': 'Server is overloaded. Please try again later.'})}\n\n"
+            return
+
+        _state.llm_inflight += 1
+        try:
+            if llm_semaphore.locked():
+                yield f"data: {json.dumps({'token': '', 'done': False, 'queued': True})}\n\n"
+
+            async with llm_semaphore:
+                threading.Thread(target=_run, daemon=True).start()
+                while True:
+                    if await request.is_disconnected():
+                        stop_event.set()
+                        return
+                    try:
+                        kind, data, extra = q.get_nowait()
+                    except _queue.Empty:
+                        await asyncio.sleep(0.01)
+                        continue
+
+                    if kind == "done":
+                        cited_sources = extra
+                        yield f"data: {json.dumps({'token': '', 'done': True, 'sources': cited_sources})}\n\n"
+                        break
+                    elif kind == "error":
+                        yield f"data: {json.dumps({'token': '', 'done': True, 'error': data})}\n\n"
+                        break
+                    elif kind == "thinking":
+                        yield f"data: {json.dumps({'thinking': data, 'done': False})}\n\n"
+                    else:
+                        full_response += data
+                        yield f"data: {json.dumps({'token': data, 'done': False})}\n\n"
+        finally:
+            _state.llm_inflight -= 1
+            if full_response and not stop_event.is_set():
+                add_message(conv_id, "assistant", full_response, sources=cited_sources)
                 append_exchange(conv_id, body.message, full_response)
 
     return StreamingResponse(

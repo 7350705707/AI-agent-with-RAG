@@ -18,6 +18,33 @@ ENV/
 *.sqlite3
 *.db
 
+# Testing & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+coverage.xml
+nosetests.xml
+test-results/
+
+# Type checking & linting
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+
+# PyInstaller
+*.spec
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# PEP 582
+__pypackages__/
+
 # Backend runtime data
 backend/packages/
 backend/uploads/
@@ -25,6 +52,7 @@ backend/chroma_db/
 backend/faiss_index/
 backend/knowledge_files/
 backend/logs/
+backend/history/
 
 # ─── Node / Frontend ─────────────────────────────────────────────────────────
 node_modules/
@@ -32,7 +60,15 @@ frontend/node_modules/
 frontend/build/
 frontend/dist/
 frontend/.vite/
+frontend/.cache/
 *.local
+
+# Build outputs & caches
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+.parcel-cache/
+.turbo/
 
 # ─── Environment & Secrets ───────────────────────────────────────────────────
 .env
@@ -47,6 +83,22 @@ backend/.jwt_secret
 # .dockerignore is a project file — do NOT ignore it
 # *.tar — exported image archive (model-ai-export.tar) can be several GB
 *.tar
+
+# ─── IDE & Editor ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ─── OS ──────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
 
 # ─── OS / Editor ─────────────────────────────────────────────────────────────
 .DS_Store
