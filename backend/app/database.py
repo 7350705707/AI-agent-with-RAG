@@ -127,6 +127,26 @@ def init_db() -> None:
     except Exception:
         pass  # non-critical
 
+    # AI-managed user memory (flexible key-value store, written by LLM tool calls)
+    try:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS user_memory (
+                id          TEXT PRIMARY KEY,
+                user_id     TEXT NOT NULL,
+                key         TEXT NOT NULL,
+                value       TEXT NOT NULL,
+                category    TEXT NOT NULL DEFAULT 'note',
+                source      TEXT NOT NULL DEFAULT 'ai',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL,
+                UNIQUE(user_id, key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_um_user ON user_memory(user_id);
+        """)
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     # Ensure a default admin account exists
     existing = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()
     if not existing:
@@ -455,6 +475,52 @@ def delete_knowledge_document(doc_id: str) -> bool:
         fp = Path(row["file_path"])
         if fp.exists():
             shutil.rmtree(fp.parent, ignore_errors=True)
+    conn.close()
+    return deleted
+
+
+# ── User Memory CRUD ───────────────────────────────────────────────────────
+
+def upsert_user_memory(user_id: str, key: str, value: str, category: str = "note", source: str = "ai") -> None:
+    """Insert or update a memory entry for *user_id*. Uses upsert on (user_id, key)."""
+    conn = _connect()
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO user_memory (id, user_id, key, value, category, source, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, key) DO UPDATE SET
+            value      = excluded.value,
+            category   = excluded.category,
+            source     = excluded.source,
+            updated_at = excluded.updated_at
+        """,
+        (str(uuid.uuid4()), user_id, key.strip()[:80], value.strip()[:500], category, source, now, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_user_memories(user_id: str) -> list[dict]:
+    """Return all memory entries for *user_id* ordered by category then key."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT key, value, category, source, updated_at "
+        "FROM user_memory WHERE user_id=? ORDER BY category, key",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_user_memory(user_id: str, key: str) -> bool:
+    """Delete a single memory entry. Returns True if a row was deleted."""
+    conn = _connect()
+    cur = conn.execute(
+        "DELETE FROM user_memory WHERE user_id=? AND key=?", (user_id, key)
+    )
+    conn.commit()
+    deleted = cur.rowcount > 0
     conn.close()
     return deleted
 

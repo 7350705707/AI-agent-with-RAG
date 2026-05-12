@@ -219,3 +219,40 @@ def search_history_for_user(user_id: str, query: str, top_k: int = 3) -> list[di
         if _jaccard(q_tok, _tokens(e["user"] + " " + e["assistant"])) > 0.0
     ]
     return relevant if relevant else all_exchanges[-top_k:]
+
+
+def get_recent_exchanges_for_user(user_id: str, n: int = 5) -> list[dict]:
+    """Return the *n* most recent exchanges across ALL of *user_id*'s conversations.
+
+    History files are ordered by modification time (newest last) so we walk
+    them from newest to oldest and collect exchanges until we have *n* total.
+    This powers "what was the previous task?" style recall where the user is
+    asking about a different conversation session.
+    """
+    conv_ids = get_conversation_ids_by_user(user_id)
+    if not conv_ids:
+        return []
+
+    # Collect (mtime, path) pairs for all existing history files
+    file_pairs: list[tuple[float, Path]] = []
+    for cid in conv_ids:
+        path = _history_path(cid)
+        if path.exists() and path.stat().st_size > 0:
+            file_pairs.append((path.stat().st_mtime, path))
+
+    # Sort newest first
+    file_pairs.sort(key=lambda x: x[0], reverse=True)
+
+    collected: list[dict] = []
+    for _mtime, path in file_pairs:
+        if len(collected) >= n:
+            break
+        try:
+            exchanges = _parse_exchanges(path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        # Take from the tail of each file (most recent turns)
+        remaining = n - len(collected)
+        collected = exchanges[-remaining:] + collected
+
+    return collected[-n:] if len(collected) > n else collected

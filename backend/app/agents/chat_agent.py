@@ -1,11 +1,16 @@
 """General Chat agent — conversational chain with hybrid RAG retrieval."""
 
 import logging
+import re
 from langchain_core.messages import HumanMessage, AIMessage
 
 from app.llm import get_llm, get_llm_streaming, is_no_model_error, is_context_size_error, ensure_model_loaded
 from app.utils.prompts import GENERAL_CHAT_PROMPT, GENERAL_CHAT_RAG_PROMPT, QUERY_NORMALIZATION_PROMPT
-from app.utils.history_store import search_history, search_history_for_user, get_recent_exchanges, tokenize
+from app.utils.history_store import (
+    search_history, search_history_for_user, get_recent_exchanges,
+    get_recent_exchanges_for_user, tokenize,
+)
+from app.utils.user_memory import format_user_facts
 from app.chroma_store import search_knowledge, get_knowledge_chunk_count
 
 log = logging.getLogger(__name__)
@@ -23,6 +28,22 @@ _FOLLOWUP_STOP = frozenset({
     "need", "use", "using", "used", "way", "ways", "thing", "things",
     "help", "helpful", "good", "better", "best", "different", "same",
 })
+
+# Patterns that indicate the user is asking about THEIR OWN history / identity.
+# When matched we skip Jaccard filtering and return the most recent exchanges.
+_HISTORY_META_RE = re.compile(
+    r"\b("
+    r"what(?:'s| is| was| were) my|who am i|tell me about my(?:self)?|"
+    r"what did (i|we|you)|what (have|had) (i|we)|"
+    r"previous(?:ly)?|last time|before|earlier|"
+    r"what was (the |my )?(last|previous|earlier)|"
+    r"remind me|we discussed|you (?:told|explained|said)|"
+    r"do you (?:know|remember) (?:my|me|what)|"
+    r"my name|my job|my age|my location|where (?:am|do) i|"
+    r"what task|previous task|last task|earlier task"
+    r")\b",
+    re.I,
+)
 
 
 def _is_substantive_query(query: str, min_tokens: int = 2) -> bool:
@@ -43,30 +64,42 @@ def _is_substantive_query(query: str, min_tokens: int = 2) -> bool:
     return len(words) >= min_tokens
 
 
-def _build_history(conversation_id: str, query: str = "", max_pairs: int = 3, user_id: str | None = None) -> list:
+def _is_history_meta_query(query: str) -> bool:
+    """Return True when the user is asking about their own identity or past tasks."""
+    return bool(_HISTORY_META_RE.search(query))
+
+
+def _build_history(conversation_id: str, query: str = "", max_pairs: int = 5, user_id: str | None = None) -> list:
     """Return the most relevant past exchanges from the markdown history store.
 
-    Always includes the most recent exchange(s) from the *current* conversation
-    so that follow-up questions ("give me in details", "explain more") have the
-    correct immediate context.
-
-    Cross-conversation search is only performed when the query is substantive
-    enough (≥ 3 content words) to avoid false-positive matches from generic
-    follow-up phrases polluting the context.
+    Strategy:
+    - Always anchors on the last 4 turns of the CURRENT conversation (covers
+      in-session follow-ups like "explain more" and "what did I just ask?").
+    - For HISTORY META queries (e.g. "what is my name?", "previous task",
+      "what did we discuss?") also injects the N most recent exchanges across
+      ALL of the user's conversations so the model can recall past sessions.
+    - For SUBSTANTIVE queries, performs Jaccard relevance search across
+      conversations and injects the top-K matches.
+    - For VAGUE follow-ups, relies entirely on recent turns (no cross-conv search).
     """
-    # Step 1: always anchor on the last 2 turns of THIS conversation
-    recent = get_recent_exchanges(conversation_id, n=2)
+    # Step 1: always anchor on the last 4 turns of THIS conversation
+    recent = get_recent_exchanges(conversation_id, n=4)
     recent_keys = {(e["user"], e["assistant"]) for e in recent}
 
-    # Step 2: only do relevance search when query is substantive
     extra: list = []
-    if _is_substantive_query(query):
+
+    if _is_history_meta_query(query) and user_id:
+        # History/identity recall: pull the most recent turns across ALL sessions
+        cross_recent = get_recent_exchanges_for_user(user_id, n=5)
+        extra = [e for e in cross_recent if (e["user"], e["assistant"]) not in recent_keys]
+
+    elif _is_substantive_query(query):
+        # Topically relevant recall via Jaccard search
         if user_id:
             scored = search_history_for_user(user_id, query, top_k=max_pairs)
         else:
             scored = search_history(conversation_id, query, top_k=max_pairs)
         extra = [e for e in scored if (e["user"], e["assistant"]) not in recent_keys]
-    # For vague follow-ups: rely entirely on `recent` (current conversation only)
 
     # Step 3: merge — recent first, deduped, capped
     combined = recent + extra
@@ -158,14 +191,15 @@ def run_chat(conversation_id: str, user_input: str, user_id: str | None = None) 
     """RAG pipeline: (1) hybrid retrieve, (2) answer. Retries with reduced context on overflow."""
     history = _build_history(conversation_id, query=user_input, user_id=user_id)
     context, _sources = _get_rag_context(user_input, original_query=user_input)
+    user_facts = format_user_facts(user_id)
     for attempt in range(3):
-        llm = get_llm(temperature=0.5)
+        llm = get_llm(temperature=0.2)
         try:
             if context:
                 chain = GENERAL_CHAT_RAG_PROMPT | llm
-                return chain.invoke({"history": history, "input": user_input, "context": context})
+                return chain.invoke({"history": history, "input": user_input, "context": context, "user_facts": user_facts})
             chain = GENERAL_CHAT_PROMPT | llm
-            return chain.invoke({"history": history, "input": user_input})
+            return chain.invoke({"history": history, "input": user_input, "user_facts": user_facts})
         except Exception as e:
             if attempt == 0 and is_no_model_error(e):
                 log.warning("No model loaded; attempting auto-load before retry...")
@@ -189,20 +223,21 @@ def run_chat_stream(conversation_id: str, user_input: str, stop_event=None, user
     """RAG pipeline with streaming. Yields (token, sources) tuples. Retries on context overflow."""
     history = _build_history(conversation_id, query=user_input, user_id=user_id)
     context, source_docs = _get_rag_context(user_input, original_query=user_input)
+    user_facts = format_user_facts(user_id)
     for attempt in range(3):
-        llm = get_llm_streaming(temperature=0.5)
+        llm = get_llm_streaming(temperature=0.2)
         tokens_yielded = 0
         try:
             if context:
                 chain = GENERAL_CHAT_RAG_PROMPT | llm
-                for token in chain.stream({"history": history, "input": user_input, "context": context}):
+                for token in chain.stream({"history": history, "input": user_input, "context": context, "user_facts": user_facts}):
                     if stop_event and stop_event.is_set():
                         return
                     tokens_yielded += 1
                     yield token, source_docs
             else:
                 chain = GENERAL_CHAT_PROMPT | llm
-                for token in chain.stream({"history": history, "input": user_input}):
+                for token in chain.stream({"history": history, "input": user_input, "user_facts": user_facts}):
                     if stop_event and stop_event.is_set():
                         return
                     tokens_yielded += 1
@@ -230,12 +265,13 @@ def run_chat_stream(conversation_id: str, user_input: str, stop_event=None, user
 def run_general_chat_stream(conversation_id: str, user_input: str, stop_event=None, user_id: str | None = None):
     """Pure LLM chat (no RAG). Yields tokens. Retries with less history on context overflow."""
     history = _build_history(conversation_id, query=user_input, user_id=user_id)
+    user_facts = format_user_facts(user_id)
     for attempt in range(3):
-        llm = get_llm_streaming(temperature=0.5)
+        llm = get_llm_streaming(temperature=0.2)
         tokens_yielded = 0
         try:
             chain = GENERAL_CHAT_PROMPT | llm
-            for token in chain.stream({"history": history, "input": user_input}):
+            for token in chain.stream({"history": history, "input": user_input, "user_facts": user_facts}):
                 if stop_event and stop_event.is_set():
                     return
                 tokens_yielded += 1

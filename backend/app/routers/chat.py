@@ -20,6 +20,7 @@ from app.database import add_message
 from app.utils.history_store import append_exchange
 from app.models import ChatRequest
 from app.utils.sanitizer import sanitize_user_input
+from app.utils.user_memory import update_user_facts
 import app.utils.state as _state
 from app.utils.state import llm_semaphore
 
@@ -28,23 +29,41 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
 
 
+def _background_extract_memory(user_id: str, user_msg: str, assistant_msg: str) -> None:
+    """Run AI-based memory extraction in a fire-and-forget daemon thread.
+
+    Called after every non-agentic response so the LLM can decide which parts
+    of the exchange are worth persisting for future recall.  Errors are logged
+    at DEBUG level and never surfaced to the user.
+    """
+    try:
+        from app.utils.user_memory import ai_extract_and_save
+        ai_extract_and_save(user_id, user_msg, assistant_msg)
+    except Exception as exc:
+        log.debug("Background memory extraction failed (non-fatal): %s", exc)
+
+
 # ── RAG Chat (non-streaming) ───────────────────────────────────────────────
 @router.post("/chat")
 def api_chat(body: ChatRequest, _user: dict | None = Depends(get_optional_user)):
     body.message = sanitize_user_input(body.message)
+    user_id = _user["sub"] if _user else None
     add_message(body.conversation_id, "user", body.message)
+    update_user_facts(user_id, body.message)
     log.info("Chat request conv_id=%s", body.conversation_id)
     try:
-        response = run_chat(body.conversation_id, body.message)
+        response = run_chat(body.conversation_id, body.message, user_id=user_id)
     except Exception as e:
         log.error("Chat LLM error conv_id=%s: %s", body.conversation_id, e, exc_info=True)
         raise HTTPException(500, f"LLM error: {e}")
     add_message(body.conversation_id, "assistant", response)
+    if user_id and response:
+        threading.Thread(
+            target=_background_extract_memory,
+            args=(user_id, body.message, response),
+            daemon=True,
+        ).start()
     return {"conversation_id": body.conversation_id, "response": response}
-
-
-# ── RAG Chat (streaming) ───────────────────────────────────────────────────
-@router.post("/chat/stream")
 async def api_chat_stream(
     request: Request,
     body: ChatRequest,
@@ -55,6 +74,7 @@ async def api_chat_stream(
     add_message(body.conversation_id, "user", body.message)
     conv_id = body.conversation_id
     user_id = _user["sub"] if _user else None
+    update_user_facts(user_id, body.message)
 
     stop_event = threading.Event()
     q: _queue.Queue = _queue.Queue()
@@ -116,6 +136,12 @@ async def api_chat_stream(
             if full_response and not stop_event.is_set():
                 add_message(conv_id, "assistant", full_response, sources=cited_sources)
                 append_exchange(conv_id, body.message, full_response)
+                if user_id:
+                    threading.Thread(
+                        target=_background_extract_memory,
+                        args=(user_id, body.message, full_response),
+                        daemon=True,
+                    ).start()
 
     return StreamingResponse(
         event_stream(),
@@ -136,6 +162,7 @@ async def api_general_chat_stream(
     add_message(body.conversation_id, "user", body.message)
     conv_id = body.conversation_id
     user_id = _user["sub"] if _user else None
+    update_user_facts(user_id, body.message)
 
     stop_event = threading.Event()
     q: _queue.Queue = _queue.Queue()
@@ -190,7 +217,12 @@ async def api_general_chat_stream(
             if full_response and not stop_event.is_set():
                 add_message(conv_id, "assistant", full_response)
                 append_exchange(conv_id, body.message, full_response)
-
+                if user_id:
+                    threading.Thread(
+                        target=_background_extract_memory,
+                        args=(user_id, body.message, full_response),
+                        daemon=True,
+                    ).start()
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
@@ -205,6 +237,7 @@ def api_agentic_chat(body: ChatRequest, _user: dict | None = Depends(get_optiona
     body.message = sanitize_user_input(body.message)
     add_message(body.conversation_id, "user", body.message)
     user_id = _user["sub"] if _user else None
+    update_user_facts(user_id, body.message)
     log.info("Agentic chat request conv_id=%s", body.conversation_id)
     try:
         response = run_agentic_chat(body.conversation_id, body.message, user_id=user_id)
@@ -235,6 +268,7 @@ async def api_agentic_chat_stream(
     add_message(body.conversation_id, "user", body.message)
     conv_id = body.conversation_id
     user_id = _user["sub"] if _user else None
+    update_user_facts(user_id, body.message)
 
     stop_event = threading.Event()
     q: _queue.Queue = _queue.Queue()

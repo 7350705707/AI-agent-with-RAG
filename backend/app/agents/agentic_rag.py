@@ -54,10 +54,11 @@ from app.utils.history_store import (
     search_history,
     search_history_for_user,
 )
+from app.utils.user_memory import format_user_facts
 
 log = logging.getLogger(__name__)
 
-MAX_AGENT_ITERATIONS = 5
+MAX_AGENT_ITERATIONS = 3
 MAX_SEARCH_CHARS = 3000
 _MAX_HIST_CHARS = 800
 
@@ -132,6 +133,38 @@ AGENT_TOOLS = [
                     },
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_memory",
+            "description": (
+                "Save an important fact about the user for permanent recall in future conversations. "
+                "Call this when the user explicitly shares: their name, job, employer, location, age, "
+                "a preference (favourite language, tool, framework), a goal they are working toward, "
+                "or a project they mention wanting help with. "
+                "Do NOT call this for general knowledge, trivia, or temporary conversational context."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "description": "Short snake_case label, e.g. user_name, job_role, employer, current_project, favorite_language, learning_goal.",
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "The concise fact to remember (max 120 chars).",
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": ["personal", "preference", "goal", "note", "task"],
+                        "description": "Category for the fact.",
+                    },
+                },
+                "required": ["key", "value", "category"],
             },
         },
     },
@@ -228,11 +261,24 @@ def _tool_search_conversation_history(
     return "\n\n---\n\n".join(parts)
 
 
+def _tool_save_memory(key: str, value: str, category: str, user_id: str | None) -> str:
+    """Persist a user fact via the user_memory module and return a confirmation string."""
+    if not user_id:
+        return "Memory not saved: no authenticated user in this session."
+    try:
+        from app.utils.user_memory import save_memory_fact
+        save_memory_fact(user_id, key, value, category, source="ai_tool")
+        return f"Memory saved: {key} = '{value}' (category: {category})"
+    except Exception as exc:
+        log.warning("save_memory tool failed: %s", exc)
+        return f"Failed to save memory: {exc}"
+
+
 def _dispatch_tool(name: str, args: dict) -> str:
     """Route a tool call to its implementation and return a string result.
 
-    Note: search_conversation_history requires runtime context (user_id,
-    conversation_id) and is dispatched inline in the run_ functions instead.
+    Note: search_conversation_history and save_memory require runtime context
+    (user_id, conversation_id) and are dispatched inline in the run_ functions.
     """
     if name == "search_knowledge_base":
         return _tool_search_knowledge_base(**args)
@@ -246,15 +292,15 @@ def _dispatch_tool(name: str, args: dict) -> str:
 def _build_history(conversation_id: str) -> list:
     """Layer 1 of the hybrid history architecture.
 
-    Always injects the last 2 turns so follow-up questions
-    ('explain more', 'give an example') always have immediate context.
+    Injects the last 4 turns so follow-up questions and short-range recall
+    ('explain more', 'what did I just ask?') always have adequate context.
     Fast: reads a single markdown file, no extra LLM call required.
 
     Layer 2 — cross-session relevance recall — is handled by the
     search_conversation_history tool, which the LLM calls autonomously
     when the user explicitly references past discussions.
     """
-    exchanges = get_recent_exchanges(conversation_id, n=2)
+    exchanges = get_recent_exchanges(conversation_id, n=4)
     messages: list = []
     for ex in exchanges:
         u = ex["user"]
@@ -303,10 +349,24 @@ _SYSTEM_PROMPT = (
     "- Cite [filename] ONLY for facts retrieved from that document.\n"
     "- Never fabricate citations. Label your own knowledge as 'From general knowledge:' "
     "with no citation.\n\n"
+    "PERSONAL INFO: When the user asks about their own name, job, location, or other "
+    "personal details, check the KNOWN USER FACTS injected below (if any) BEFORE "
+    "searching history or documents.\n\n"
+    "MEMORY: If the user shares personal info (name, job, preferences, current project, "
+    "goals, or anything they want the assistant to remember), call save_memory ONCE with "
+    "the relevant fact. Do NOT call save_memory for general knowledge.\n\n"
     "CONVERSATION MEMORY: Answer questions about previous messages from history provided.\n"
     "For general knowledge, use an Indian perspective where applicable "
     "(geography, laws, currency ₹, current events)."
 )
+
+
+def _build_system_messages(user_facts: str = "") -> list:
+    """Build the list of system messages, optionally prepending known user facts."""
+    msgs: list = [SystemMessage(content=_SYSTEM_PROMPT)]
+    if user_facts:
+        msgs.append(SystemMessage(content=user_facts))
+    return msgs
 
 # Injected as an extra SystemMessage when the user explicitly asks to search documents
 _FORCE_SEARCH_OVERRIDE = (
@@ -331,7 +391,8 @@ def run_agentic_chat(
 ) -> str:
     """Run the full agentic tool-calling loop and return the final text response."""
     history = _build_history(conversation_id)
-    system_msgs: list = [SystemMessage(content=_SYSTEM_PROMPT)]
+    user_facts = format_user_facts(user_id)
+    system_msgs = _build_system_messages(user_facts)
     if _detect_explicit_search_intent(user_input):
         log.info("Explicit search intent detected — injecting force-search override.")
         system_msgs.append(SystemMessage(content=_FORCE_SEARCH_OVERRIDE))
@@ -350,12 +411,18 @@ def run_agentic_chat(
                     return response.content or ""
 
                 for tc in tool_calls:
+                    args = tc.get("args") or {}
                     if tc["name"] == "search_conversation_history":
                         result = _tool_search_conversation_history(
-                            tc["args"].get("query", ""), user_id, conversation_id
+                            args.get("query", ""), user_id, conversation_id
+                        )
+                    elif tc["name"] == "save_memory":
+                        result = _tool_save_memory(
+                            args.get("key", ""), args.get("value", ""),
+                            args.get("category", "note"), user_id
                         )
                     else:
-                        result = _dispatch_tool(tc["name"], tc["args"])
+                        result = _dispatch_tool(tc["name"], args)
                     log.info(
                         "Agent[iter=%d] tool=%s → %d chars",
                         iteration, tc["name"], len(result),
@@ -399,7 +466,8 @@ def run_agentic_chat_stream(
     The caller (router) is responsible for saving history and sending SSE.
     """
     history = _build_history(conversation_id)
-    system_msgs: list = [SystemMessage(content=_SYSTEM_PROMPT)]
+    user_facts = format_user_facts(user_id)
+    system_msgs = _build_system_messages(user_facts)
     if _detect_explicit_search_intent(user_input):
         log.info("Explicit search intent detected — injecting force-search override.")
         system_msgs.append(SystemMessage(content=_FORCE_SEARCH_OVERRIDE))
@@ -437,6 +505,7 @@ def run_agentic_chat_stream(
                         "search_knowledge_base": "Searching database…",
                         "expand_search_keywords": "Expanding search keywords…",
                         "search_conversation_history": "Searching conversation history…",
+                        "save_memory": "Saving to memory…",
                     }
                     yield ("thinking", tool_labels.get(tc["name"], f"Running {tc['name']}…"), [])
 
@@ -444,6 +513,11 @@ def run_agentic_chat_stream(
                     if tc["name"] == "search_conversation_history":
                         result = _tool_search_conversation_history(
                             args.get("query", ""), user_id, conversation_id
+                        )
+                    elif tc["name"] == "save_memory":
+                        result = _tool_save_memory(
+                            args.get("key", ""), args.get("value", ""),
+                            args.get("category", "note"), user_id
                         )
                     # For search_knowledge_base: collect real doc_id + filename directly
                     # from raw results BEFORE formatting, so sources are accurate.
