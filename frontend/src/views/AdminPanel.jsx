@@ -14,10 +14,10 @@ import {
 import { listUsers, createUser, updateUser, deleteUser as apiDeleteUser, resetUserPassword } from '../api';
 
 const ALL_AGENTS = [
-  { id: 'general', label: 'General Chat' },
   { id: 'chat', label: 'RAG Chat' },
   { id: 'exam', label: 'Exam' },
-  { id: 'knowledge', label: 'Library' },
+  { id: 'knowledge', label: 'Knowledge Base' },
+  { id: 'search', label: 'KB Search' },
 ];
 
 export default function AdminPanel() {
@@ -30,7 +30,7 @@ export default function AdminPanel() {
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newRole, setNewRole] = useState('user');
-  const [newAgents, setNewAgents] = useState(['general']);
+  const [newAgents, setNewAgents] = useState(['chat']);
   const [creating, setCreating] = useState(false);
 
   // Password reset

@@ -52,23 +52,12 @@ export const sendChatStream = async (conversationId, message, onToken, signal) =
   await _readSSEStream(res, onToken, signal);
 };
 
-// ── General Chat (no RAG) ─────────────────────────────────────────────────
-export const sendGeneralChatStream = async (conversationId, message, onToken, signal) => {
-  const res = await fetch(`${BASE}/general-chat/stream`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ conversation_id: conversationId, message }),
-    signal,
-  });
-  await _readSSEStream(res, onToken, signal);
-};
-
 // ── Agentic RAG Chat (tool-calling loop) ──────────────────────────────────
-export const sendAgenticChatStream = async (conversationId, message, onToken, signal) => {
+export const sendAgenticChatStream = async (conversationId, message, onToken, signal, fileIds = []) => {
   const res = await fetch(`${BASE}/agentic-chat/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({ conversation_id: conversationId, message }),
+    body: JSON.stringify({ conversation_id: conversationId, message, file_ids: fileIds }),
     signal,
   });
   await _readSSEStream(res, onToken, signal);

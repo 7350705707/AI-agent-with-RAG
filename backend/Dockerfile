@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Create venv inside container
-# RUN python -m venv /opt/venv
-# ENV PATH="/opt/venv/bin:$PATH"
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy requirements and install from PyPI
 COPY requirements.txt .

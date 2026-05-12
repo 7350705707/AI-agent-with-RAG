@@ -4,6 +4,8 @@ import ChatPanel from './views/ChatPanel';
 import ExamPanel from './views/ExamPanel';
 import AdminPanel from './views/AdminPanel';
 import KnowledgePanel from './views/KnowledgePanel';
+import SearchPanel from './views/SearchPanel';
+import AnalyticsPanel from './views/AnalyticsPanel';
 import LoginPage from './views/LoginPage';
 import AboutPage from './views/AboutPage';
 import { getStoredUser, logout as apiLogout, getToken } from './api';
@@ -70,6 +72,12 @@ export default function App() {
     }
     if (activeAgent === 'admin' && user.role === 'admin') {
       return <AdminPanel />;
+    }
+    if (activeAgent === 'analytics' && user.role === 'admin') {
+      return <AnalyticsPanel user={user} />;
+    }
+    if (activeAgent === 'search') {
+      return <SearchPanel />;
     }
     if (activeAgent === 'knowledge' && allowedAgents.includes('knowledge')) {
       return <KnowledgePanel />;

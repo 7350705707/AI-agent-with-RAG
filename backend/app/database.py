@@ -105,6 +105,23 @@ def init_db() -> None:
     except sqlite3.OperationalError:
         pass  # already exists
 
+    # Analytics events table
+    try:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS analytics_events (
+                id          TEXT PRIMARY KEY,
+                user_id     TEXT,
+                agent_type  TEXT NOT NULL DEFAULT 'chat',
+                message_len INTEGER NOT NULL DEFAULT 0,
+                created_at  TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ae_user ON analytics_events(user_id);
+            CREATE INDEX IF NOT EXISTS idx_ae_day  ON analytics_events(created_at);
+        """)
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     # Backfill file_hash for documents uploaded before hash tracking was added
     try:
         import hashlib as _hashlib
@@ -548,3 +565,90 @@ def rename_knowledge_document(doc_id: str, new_filename: str) -> bool:
 
 # ── Knowledge Chunks — now handled by app.chroma_store ────────────────────
 # (FTS5 tables removed; use app.chroma_store for vector search)
+
+
+# ── Analytics CRUD ─────────────────────────────────────────────────────────
+
+def log_analytics_event(user_id: str | None, agent_type: str, message_len: int = 0) -> None:
+    """Insert one analytics row. Called fire-and-forget from routers."""
+    conn = _connect()
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO analytics_events (id, user_id, agent_type, message_len, created_at) VALUES (?,?,?,?,?)",
+        (str(uuid.uuid4()), user_id, agent_type, message_len, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_analytics_summary() -> dict:
+    """Return overall platform statistics for the admin dashboard."""
+    conn = _connect()
+
+    total_messages = conn.execute("SELECT COUNT(*) FROM analytics_events").fetchone()[0]
+    total_users    = conn.execute("SELECT COUNT(*) FROM users WHERE role='user'").fetchone()[0]
+    total_docs     = conn.execute("SELECT COUNT(*) FROM knowledge_documents").fetchone()[0]
+    total_convs    = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+
+    # Messages per agent type
+    by_agent = {}
+    for row in conn.execute(
+        "SELECT agent_type, COUNT(*) as cnt FROM analytics_events GROUP BY agent_type"
+    ).fetchall():
+        by_agent[row["agent_type"]] = row["cnt"]
+
+    # Daily message counts for the last 14 days
+    daily = []
+    for row in conn.execute(
+        "SELECT DATE(created_at) as day, COUNT(*) as cnt "
+        "FROM analytics_events "
+        "WHERE created_at >= DATE('now','-14 days') "
+        "GROUP BY day ORDER BY day"
+    ).fetchall():
+        daily.append({"date": row["day"], "count": row["cnt"]})
+
+    # Top 10 most active users
+    top_users = []
+    for row in conn.execute(
+        "SELECT u.username, COUNT(a.id) as msg_count "
+        "FROM analytics_events a "
+        "LEFT JOIN users u ON a.user_id = u.id "
+        "GROUP BY a.user_id ORDER BY msg_count DESC LIMIT 10"
+    ).fetchall():
+        top_users.append({"username": row["username"] or "guest", "messages": row["msg_count"]})
+
+    conn.close()
+    return {
+        "total_messages": total_messages,
+        "total_users": total_users,
+        "total_documents": total_docs,
+        "total_conversations": total_convs,
+        "by_agent": by_agent,
+        "daily_messages": daily,
+        "top_users": top_users,
+    }
+
+
+def get_user_analytics(user_id: str) -> dict:
+    """Return analytics specific to one user."""
+    conn = _connect()
+    total = conn.execute(
+        "SELECT COUNT(*) FROM analytics_events WHERE user_id=?", (user_id,)
+    ).fetchone()[0]
+    by_agent = {}
+    for row in conn.execute(
+        "SELECT agent_type, COUNT(*) as cnt FROM analytics_events WHERE user_id=? GROUP BY agent_type",
+        (user_id,),
+    ).fetchall():
+        by_agent[row["agent_type"]] = row["cnt"]
+    daily = []
+    for row in conn.execute(
+        "SELECT DATE(created_at) as day, COUNT(*) as cnt "
+        "FROM analytics_events WHERE user_id=? AND created_at >= DATE('now','-14 days') "
+        "GROUP BY day ORDER BY day",
+        (user_id,),
+    ).fetchall():
+        daily.append({"date": row["day"], "count": row["cnt"]})
+    conn.close()
+    return {"total_messages": total, "by_agent": by_agent, "daily_messages": daily}
+

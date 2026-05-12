@@ -8,6 +8,10 @@ from pydantic import BaseModel, Field, field_validator
 class ChatRequest(BaseModel):
     conversation_id: str
     message: str = Field(..., min_length=1, max_length=10000)
+    file_ids: list[str] = Field(
+        default_factory=list,
+        description="Optional list of uploaded file IDs to include as extra context",
+    )
 
 
 class ExamRequest(BaseModel):

@@ -15,8 +15,9 @@ import {
   X,
   RefreshCw,
   Zap,
+  FileSearch,
 } from 'lucide-react';
-import { uploadKnowledgeDoc, listKnowledgeDocs, deleteKnowledgeDoc, clearKnowledgeBase, getKnowledgeDocUrl, renameKnowledgeDoc, indexKnowledgeDoc } from '../api';
+import { uploadKnowledgeDoc, listKnowledgeDocs, deleteKnowledgeDoc, clearKnowledgeBase, getKnowledgeDocUrl, renameKnowledgeDoc, indexKnowledgeDoc, summarizeKnowledgeDoc } from '../api';
 
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -35,6 +36,8 @@ export default function KnowledgePanel() {
   const [renamingId, setRenamingId] = useState(null);
   const [renameValue, setRenameValue] = useState('');
   const [indexingIds, setIndexingIds] = useState(new Set());
+  const [summaryModal, setSummaryModal] = useState(null); // {filename, summary} or null
+  const [summarizingId, setSummarizingId] = useState(null);
   const fileRef = useRef(null);
   const renameInputRef = useRef(null);
 
@@ -168,6 +171,18 @@ export default function KnowledgePanel() {
     } finally {
       setIndexingIds((prev) => { const s = new Set(prev); s.delete(docId); return s; });
       setTimeout(() => refresh(), 3000);
+    }
+  };
+
+  const handleSummarize = async (docId, filename) => {
+    setSummarizingId(docId);
+    try {
+      const res = await summarizeKnowledgeDoc(docId);
+      setSummaryModal({ filename: res.filename, summary: res.summary });
+    } catch (e) {
+      setError(`Summarize failed: ${e.message}`);
+    } finally {
+      setSummarizingId(null);
     }
   };
 
@@ -366,6 +381,17 @@ export default function KnowledgePanel() {
                       </button>
                     )}
                     <button
+                      onClick={() => handleSummarize(doc.id, doc.filename)}
+                      disabled={summarizingId === doc.id || doc.chunk_count === 0}
+                      className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 hover:text-indigo-300 transition disabled:opacity-40"
+                      title={doc.chunk_count === 0 ? 'Index this document first' : 'AI Summary'}
+                    >
+                      {summarizingId === doc.id
+                        ? <Loader2 size={12} className="animate-spin" />
+                        : <FileSearch size={12} />}
+                      Summary
+                    </button>
+                    <button
                       onClick={() => startRename(doc)}
                       className="p-1.5 rounded hover:bg-blue-500/20 text-gray-600 hover:text-blue-400 opacity-0 group-hover:opacity-100 transition"
                       title="Rename document"
@@ -395,6 +421,26 @@ export default function KnowledgePanel() {
           </div>
         )}
       </div>
+
+      {/* Summary modal */}
+      {summaryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={() => setSummaryModal(null)}>
+          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-4 border-b">
+              <div className="flex items-center gap-2">
+                <FileSearch size={16} className="text-indigo-600" />
+                <h3 className="font-semibold text-slate-800 text-sm truncate max-w-sm">{summaryModal.filename}</h3>
+              </div>
+              <button onClick={() => setSummaryModal(null)} className="text-gray-400 hover:text-gray-600">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-5 py-4 text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">
+              {summaryModal.summary}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

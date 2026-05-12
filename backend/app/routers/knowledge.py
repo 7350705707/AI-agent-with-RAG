@@ -220,3 +220,79 @@ def api_knowledge_download(
         filename=doc["filename"],
         media_type="application/octet-stream",
     )
+
+
+# ── Summarize document ─────────────────────────────────────────────────────
+@router.post("/documents/{doc_id}/summarize")
+def api_knowledge_summarize(
+    doc_id: str,
+    _user: dict = Depends(get_current_user),
+):
+    """Generate an AI summary of the document using indexed chunks."""
+    from app.chroma_store import search_knowledge, get_knowledge_chunk_count
+    from app.llm import get_llm
+    from app.utils.prompts import SUMMARIZE_PROMPT
+
+    doc = get_knowledge_document(doc_id)
+    if not doc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+
+    if get_knowledge_chunk_count() == 0:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Document has not been indexed yet")
+
+    # Fetch representative chunks from this document (broad query to get overview)
+    results = search_knowledge(doc["filename"], limit=12)
+    # Filter to only chunks belonging to this document
+    chunks = [r for r in results if r.get("doc_id") == doc_id]
+    if not chunks:
+        # Fallback: try with a generic query
+        chunks = results[:8]
+    if not chunks:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No indexed content found for this document")
+
+    content = "\n\n".join(c["content"] for c in chunks[:10])[:6000]
+
+    try:
+        llm = get_llm(temperature=0.3, num_predict=800)
+        result = (SUMMARIZE_PROMPT | llm).invoke({
+            "filename": doc["filename"],
+            "content": content,
+        })
+        summary_text = result.content if hasattr(result, "content") else str(result)
+        return {"doc_id": doc_id, "filename": doc["filename"], "summary": summary_text.strip()}
+    except Exception as e:
+        log.error("Summarize failed for doc_id=%s: %s", doc_id, e)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, f"Summarization failed: {e}")
+
+
+# ── Semantic Knowledge Base Search ─────────────────────────────────────────
+@router.get("/search")
+def api_knowledge_search(
+    q: str,
+    limit: int = 10,
+    _user: dict = Depends(get_current_user),
+):
+    """Hybrid semantic + BM25 search over the entire knowledge base."""
+    from app.chroma_store import search_knowledge, get_knowledge_chunk_count
+
+    q = q.strip()
+    if not q:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Query cannot be empty")
+    if get_knowledge_chunk_count() == 0:
+        return {"query": q, "results": []}
+
+    limit = min(max(1, limit), 30)
+    results = search_knowledge(q, limit=limit)
+    return {
+        "query": q,
+        "results": [
+            {
+                "doc_id": r["doc_id"],
+                "filename": r["filename"],
+                "snippet": r["content"][:500],
+                "score": r["score"],
+            }
+            for r in results
+        ],
+    }
+

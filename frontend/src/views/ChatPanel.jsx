@@ -1,6 +1,6 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
-import { Send, Loader2, MessageSquare, FileDown, Square, Wrench } from 'lucide-react';
-import { sendAgenticChatStream, getMessages, createConversation, getKnowledgeDocUrl } from '../api';
+import { Send, Loader2, MessageSquare, FileDown, Square, Wrench, Paperclip, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { sendAgenticChatStream, getMessages, createConversation, getKnowledgeDocUrl, uploadFile } from '../api';
 import MessageBubble from '../components/MessageBubble';
 
 export default function ChatPanel({ conversationId, onNewConversation }) {
@@ -9,6 +9,10 @@ export default function ChatPanel({ conversationId, onNewConversation }) {
   const [loading, setLoading] = useState(false);
   const [streamContent, setStreamContent] = useState('');
   const [thinkingStep, setThinkingStep] = useState('');
+  const [uploadedFiles, setUploadedFiles] = useState([]); // [{file_id, filename}]
+  const [uploading, setUploading] = useState(false);
+  const [expandedSnippets, setExpandedSnippets] = useState({});
+  const fileInputRef = useRef(null);
   const abortRef = useRef(null);
   const activeConvRef = useRef(conversationId);
   const bottomRef = useRef(null);
@@ -51,6 +55,7 @@ export default function ChatPanel({ conversationId, onNewConversation }) {
     if (!text || loading) return;
 
     let convId = conversationId;
+    const fileIds = uploadedFiles.map((f) => f.file_id);
 
     // Auto-create conversation if none selected
     if (!convId) {
@@ -69,6 +74,7 @@ export default function ChatPanel({ conversationId, onNewConversation }) {
     }
 
     setInput('');
+    setUploadedFiles([]);
     setMessages((prev) => [
       ...prev,
       { id: Date.now().toString(), role: 'user', content: text },
@@ -108,7 +114,7 @@ export default function ChatPanel({ conversationId, onNewConversation }) {
           fullResponse += data.token;
           setStreamContent(fullResponse);
         }
-      }, controller.signal);
+      }, controller.signal, fileIds);
 
       if (fullResponse && activeConvRef.current === targetConvId) {
         setMessages((prev) => [
@@ -140,6 +146,29 @@ export default function ChatPanel({ conversationId, onNewConversation }) {
   const handleStop = () => {
     abortRef.current?.abort();
     setThinkingStep('');
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const res = await uploadFile(file, conversationId);
+      setUploadedFiles((prev) => [...prev, { file_id: res.file_id, filename: res.filename }]);
+    } catch (err) {
+      alert(`Upload failed: ${err.message}`);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const removeUploadedFile = (fileId) => {
+    setUploadedFiles((prev) => prev.filter((f) => f.file_id !== fileId));
+  };
+
+  const toggleSnippet = (key) => {
+    setExpandedSnippets((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   const handleKeyDown = (e) => {
@@ -213,25 +242,43 @@ export default function ChatPanel({ conversationId, onNewConversation }) {
           <div key={m.id}>
             <MessageBubble role={m.role} content={m.content} />
             {m.sources && m.sources.length > 0 && (
-              <div className="ml-11 -mt-2 mb-4 flex flex-wrap gap-2">
+              <div className="ml-11 -mt-2 mb-4 flex flex-col gap-1">
                 <span className="text-xs text-gray-500">📚 Sources:</span>
-                {m.sources.map((s) =>
-                  s.doc_id ? (
-                    <a
-                      key={s.doc_id}
-                      href={getKnowledgeDocUrl(s.doc_id)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-xs text-blue-400 hover:text-blue-300 underline underline-offset-2"
-                    >
-                      {s.filename}
-                    </a>
-                  ) : (
-                    <span key={s.filename} className="text-xs text-blue-400">
-                      {s.filename}
-                    </span>
-                  )
-                )}
+                {m.sources.map((s, si) => {
+                  const key = `${m.id}-${si}`;
+                  return (
+                    <div key={key} className="text-xs">
+                      <div className="flex items-center gap-1">
+                        {s.doc_id ? (
+                          <a
+                            href={getKnowledgeDocUrl(s.doc_id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-400 hover:text-blue-300 underline underline-offset-2"
+                          >
+                            {s.filename}
+                          </a>
+                        ) : (
+                          <span className="text-blue-400">{s.filename}</span>
+                        )}
+                        {s.snippet && (
+                          <button
+                            onClick={() => toggleSnippet(key)}
+                            className="text-gray-400 hover:text-gray-300 flex items-center gap-0.5"
+                            title="Show excerpt"
+                          >
+                            {expandedSnippets[key] ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                          </button>
+                        )}
+                      </div>
+                      {s.snippet && expandedSnippets[key] && (
+                        <div className="mt-1 ml-2 px-2 py-1.5 bg-slate-50 border border-slate-200 rounded text-gray-600 italic text-xs leading-relaxed max-w-lg">
+                          "{s.snippet}…"
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -265,7 +312,30 @@ export default function ChatPanel({ conversationId, onNewConversation }) {
 
       {/* Input */}
       <div className="shrink-0 border-t border-slate-200 px-6 py-4">
+        {/* Uploaded file chips */}
+        {uploadedFiles.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {uploadedFiles.map((f) => (
+              <span key={f.file_id} className="flex items-center gap-1 px-2 py-0.5 bg-blue-50 border border-blue-200 rounded-full text-xs text-blue-700">
+                <Paperclip size={10} />
+                {f.filename}
+                <button onClick={() => removeUploadedFile(f.file_id)} className="hover:text-red-500 ml-0.5">
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2 bg-white rounded-xl px-4 py-2 border border-slate-200 focus-within:border-blue-500 shadow-sm transition">
+          <input ref={fileInputRef} type="file" accept=".pdf,.docx,.pptx" className="hidden" onChange={handleFileUpload} />
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading || loading}
+            title="Attach a file"
+            className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 disabled:opacity-40 transition"
+          >
+            {uploading ? <Loader2 size={15} className="animate-spin" /> : <Paperclip size={15} />}
+          </button>
           <textarea
             ref={textareaRef}
             rows={1}

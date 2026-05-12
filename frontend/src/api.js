@@ -9,4 +9,5 @@ export * from './services/admin.js';
 export * from './services/knowledge.js';
 export * from './services/chat.js';
 export * from './services/models.js';
+export * from './services/analytics.js';
 

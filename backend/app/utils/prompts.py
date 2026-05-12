@@ -149,6 +149,22 @@ EXAM_PROMPT_NO_DOCS = ChatPromptTemplate.from_messages(
     ]
 )
 
+# ── Document Summarizer ────────────────────────────────────────────────────
+SUMMARIZE_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You are a document summarizer. Read the document content provided and produce a clear, "
+            "well-structured summary. Include:\n"
+            "1. A 2-3 sentence overview of what the document is about.\n"
+            "2. Key topics and main points covered (as bullet points).\n"
+            "3. Important facts, figures, or conclusions.\n"
+            "Keep the summary concise but comprehensive. Do NOT copy large verbatim blocks.",
+        ),
+        ("human", "Document: {filename}\n\nContent:\n{content}"),
+    ]
+)
+
 # ── Memory Extraction Prompt ───────────────────────────────────────────────
 MEMORY_EXTRACTION_PROMPT = ChatPromptTemplate.from_messages(
     [

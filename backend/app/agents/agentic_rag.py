@@ -447,6 +447,29 @@ def run_agentic_chat(
             raise
 
 
+# ── Temp file context loader ───────────────────────────────────────────────
+
+def _load_temp_file_context(file_ids: list) -> str:
+    """Load and extract text from user-uploaded files by their file_ids."""
+    from app.config import UPLOAD_DIR
+    from app.utils.document_loader import load_and_split
+
+    parts: list[str] = []
+    for fid in file_ids or []:
+        fid_dir = UPLOAD_DIR / str(fid)
+        if not fid_dir.is_dir():
+            continue
+        for fp in fid_dir.iterdir():
+            if fp.is_file():
+                try:
+                    docs = load_and_split(fp)
+                    text = "\n".join(d.page_content for d in docs)[:3000]
+                    parts.append(f"--- File: {fp.name} ---\n{text}")
+                except Exception as e:
+                    log.warning("Could not read temp file %s: %s", fp, e)
+    return "\n\n".join(parts)
+
+
 # ── Streaming agentic chat ─────────────────────────────────────────────────
 
 def run_agentic_chat_stream(
@@ -455,6 +478,7 @@ def run_agentic_chat_stream(
     stop_event=None,
     user_id: Optional[str] = None,
     max_iterations: int = MAX_AGENT_ITERATIONS,
+    temp_file_ids: list | None = None,
 ) -> Generator:
     """Agentic tool-calling loop with a streaming final answer.
 
@@ -471,7 +495,19 @@ def run_agentic_chat_stream(
     if _detect_explicit_search_intent(user_input):
         log.info("Explicit search intent detected — injecting force-search override.")
         system_msgs.append(SystemMessage(content=_FORCE_SEARCH_OVERRIDE))
-    messages: list = system_msgs + history + [HumanMessage(content=user_input)]
+
+    # Combine uploaded file content directly into the user message for analysis
+    combined_input = user_input
+    if temp_file_ids:
+        extra_ctx = _load_temp_file_context(temp_file_ids)
+        if extra_ctx:
+            combined_input = (
+                f"[Attached file content for analysis]\n\n{extra_ctx}\n\n"
+                f"[User query]\n{user_input}"
+            )
+            log.info("Injected %d temp file(s) into user message.", len(temp_file_ids))
+
+    messages: list = system_msgs + history + [HumanMessage(content=combined_input)]
     all_sources: list[dict] = []
 
     for attempt in range(2):
@@ -530,10 +566,11 @@ def run_agentic_chat_stream(
                         for r in raw_results:
                             fname = r.get("filename", "")
                             doc_id = r.get("doc_id", "")
+                            snippet = r.get("content", "")[:400]
                             if fname and fname not in seen_fnames:
-                                all_sources.append({"filename": fname, "doc_id": doc_id})
+                                all_sources.append({"filename": fname, "doc_id": doc_id, "snippet": snippet})
                                 seen_fnames.add(fname)
-                        result = _format_search_results(raw_results) if raw_results else f"No relevant content found for query: '{args.get('query', '')}'" 
+                        result = _format_search_results(raw_results) if raw_results else f"No relevant content found for query: '{args.get('query', '')}'"
                     else:
                         result = _dispatch_tool(tc["name"], args)
 

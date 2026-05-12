@@ -59,6 +59,12 @@ export const clearKnowledgeBase = () =>
 export const indexKnowledgeDoc = (id) =>
   request(`/knowledge/documents/${id}/index`, { method: 'POST' });
 
+export const summarizeKnowledgeDoc = (id) =>
+  request(`/knowledge/documents/${id}/summarize`, { method: 'POST' });
+
+export const searchKnowledge = (q, limit = 10) =>
+  request(`/knowledge/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+
 export const getKnowledgeDocUrl = (docId) => {
   const token = getToken();
   const url = `${BASE}/knowledge/documents/${docId}/download`;

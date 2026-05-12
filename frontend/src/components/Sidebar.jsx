@@ -11,6 +11,8 @@ import {
   User,
   BookOpen,
   Info,
+  Search,
+  BarChart2,
 } from 'lucide-react';
 import { listConversations, createConversation, deleteConversation } from '../api';
 import ModelSelector from './ModelSelector';
@@ -18,7 +20,9 @@ import ModelSelector from './ModelSelector';
 const ALL_AGENTS = [
   { id: 'chat', label: 'RAG AI Chat', icon: Bot },
   { id: 'exam', label: 'Exam Paper Generator', icon: FileText },
-  { id: 'knowledge', label: 'Library Base', icon: BookOpen },
+  { id: 'knowledge', label: 'Knowledge Base', icon: BookOpen },
+  { id: 'search', label: 'KB Search', icon: Search },
+  { id: 'analytics', label: 'Analytics', icon: BarChart2, adminOnly: true },
 ];
 
 export default function Sidebar({
@@ -34,7 +38,11 @@ export default function Sidebar({
   const [conversations, setConversations] = useState([]);
 
   // user is always logged in — filter agents by assignment
-  const agents = ALL_AGENTS.filter((a) => a.id === 'chat' || user?.agents?.includes(a.id));
+  const agents = ALL_AGENTS.filter((a) => {
+    if (a.adminOnly) return user?.role === 'admin';
+    if (a.id === 'chat') return true;
+    return user?.agents?.includes(a.id);
+  });
 
   const refresh = async () => {
     try {
@@ -90,7 +98,7 @@ export default function Sidebar({
           </div>
 
           {/* Agent selector */}
-          <div className="px-3 pt-4 pb-2">
+          <div className="shrink-0 px-3 pt-4 pb-2">
             <p className="text-[11px] uppercase tracking-wider text-indigo-400/80 mb-2 px-1">
               Agents
             </p>
@@ -110,8 +118,8 @@ export default function Sidebar({
             ))}
           </div>
 
-          {/* Conversations (hide for non-conversation agents) */}
-          {activeAgent !== 'knowledge' && activeAgent !== 'admin' && (
+          {/* Conversations (only for chat & exam agents) */}
+          {(activeAgent === 'chat' || activeAgent === 'exam') && (
           <div className="flex-1 flex flex-col overflow-hidden px-3 pt-2">
             <div className="flex items-center justify-between mb-2 px-1">
               <p className="text-[11px] uppercase tracking-wider text-indigo-400/80">
@@ -126,7 +134,7 @@ export default function Sidebar({
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-0.5">
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-0.5">
               {conversations.map((c) => (
                 <button
                   key={c.id}
