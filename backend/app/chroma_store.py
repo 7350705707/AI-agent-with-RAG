@@ -1,9 +1,11 @@
 """ChromaDB vector store for knowledge base semantic search.
 
-Replaces the SQLite FTS5 (BM25) knowledge search with proper vector embeddings.
-Uses LM Studio's /v1/embeddings endpoint when available, falling back to
-ChromaDB's built-in default embedding (all-MiniLM-L6-v2 via ONNX — cached on
-first use, then works fully offline).
+Embedding strategy (controlled by EMBEDDING_MODE env var):
+  "auto"     — LM Studio /v1/embeddings first; falls back to ChromaDB ONNX
+               (all-MiniLM-L6-v2) when LM Studio is unreachable.  Fully offline.
+  "lmstudio" — LM Studio only.  Raises RuntimeError at startup if unreachable.
+               Re-index all documents after switching to ensure a consistent
+               vector space (use POST /api/admin/reindex).
 
 Hybrid search: combines ChromaDB cosine-similarity (vector) with BM25-style
 keyword ranking, then fuses results via Reciprocal Rank Fusion (RRF) so that
@@ -19,7 +21,7 @@ from typing import List, Optional
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 
-from app.config import CHROMA_DIR, LM_STUDIO_BASE_URL
+from app.config import CHROMA_DIR, EMBEDDING_MODE, EMBEDDING_BATCH_SIZE, EMBEDDING_TIMEOUT, LM_STUDIO_BASE_URL
 
 log = logging.getLogger(__name__)
 
@@ -33,12 +35,18 @@ _collection: Optional[chromadb.Collection] = None
 # ── Embedding function ─────────────────────────────────────────────────────
 
 class LMStudioEmbeddingFunction(EmbeddingFunction):
-    """Call LM Studio's OpenAI-compatible /v1/embeddings endpoint."""
+    """Call LM Studio's OpenAI-compatible /v1/embeddings endpoint.
 
-    def __init__(self, base_url: str):
+    Uses a short timeout for the startup probe and a longer configurable
+    timeout for real embedding calls (EMBEDDING_TIMEOUT env var, default 120 s).
+    """
+
+    def __init__(self, base_url: str, probe: bool = False):
         import httpx
         self._url = base_url.rstrip("/") + "/embeddings"
-        self._http = httpx.Client(timeout=3)  # short timeout — probe must fail fast
+        # Probe needs to fail fast; real calls need time for large batches.
+        timeout = 3 if probe else EMBEDDING_TIMEOUT
+        self._http = httpx.Client(timeout=timeout)
 
     def __call__(self, input: Documents) -> Embeddings:  # noqa: A002
         resp = self._http.post(
@@ -52,14 +60,24 @@ class LMStudioEmbeddingFunction(EmbeddingFunction):
 
 
 def _make_embedding_function() -> EmbeddingFunction | None:
-    """Try LM Studio embeddings first; fall back to chromadb default."""
+    """Build embedding function according to EMBEDDING_MODE.
+
+    "lmstudio": LM Studio only — raises RuntimeError if /v1/embeddings unreachable.
+    "auto"    : LM Studio first; falls back to ChromaDB ONNX all-MiniLM-L6-v2.
+    """
     try:
-        ef = LMStudioEmbeddingFunction(LM_STUDIO_BASE_URL)
-        # Quick probe — if it fails we fall back
-        ef(["test"])
+        probe_ef = LMStudioEmbeddingFunction(LM_STUDIO_BASE_URL, probe=True)
+        probe_ef(["test"])  # quick probe with short timeout
+        ef = LMStudioEmbeddingFunction(LM_STUDIO_BASE_URL, probe=False)  # long-timeout client for real calls
         log.info("ChromaDB: using LM Studio embedding endpoint (%s)", LM_STUDIO_BASE_URL)
         return ef
     except Exception as exc:
+        if EMBEDDING_MODE == "lmstudio":
+            raise RuntimeError(
+                f"EMBEDDING_MODE=lmstudio but LM Studio /v1/embeddings is not reachable "
+                f"({LM_STUDIO_BASE_URL}). Start an embedding model in LM Studio or set "
+                f"EMBEDDING_MODE=auto to allow the ONNX fallback."
+            ) from exc
         log.info("LM Studio embedding not available (%s); using default ONNX embedding.", exc)
         try:
             from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
@@ -67,6 +85,31 @@ def _make_embedding_function() -> EmbeddingFunction | None:
         except Exception as exc2:
             log.warning("Default embedding function unavailable (%s); ChromaDB will use its internal default.", exc2)
             return None
+
+
+def check_embedding_health() -> dict:
+    """Probe LM Studio /v1/embeddings and return a status dict.
+
+    Returns keys: lmstudio_available, lmstudio_url, mode, error (on failure).
+    """
+    try:
+        ef = LMStudioEmbeddingFunction(LM_STUDIO_BASE_URL, probe=True)
+        ef(["health-check"])
+        return {
+            "lmstudio_available": True,
+            "lmstudio_url": LM_STUDIO_BASE_URL,
+            "mode": EMBEDDING_MODE,
+            "active_backend": "lmstudio",
+        }
+    except Exception as exc:
+        active = "unavailable" if EMBEDDING_MODE == "lmstudio" else "onnx_fallback"
+        return {
+            "lmstudio_available": False,
+            "lmstudio_url": LM_STUDIO_BASE_URL,
+            "mode": EMBEDDING_MODE,
+            "active_backend": active,
+            "error": str(exc),
+        }
 
 
 def _get_collection() -> chromadb.Collection:
@@ -120,10 +163,22 @@ def add_knowledge_chunks(doc_id: str, filename: str, chunks: List[dict]) -> int:
             meta = {"doc_id": doc_id, "filename": filename, **{k: str(v) for k, v in raw_meta.items()}}
         metadatas.append(meta)
 
-    # upsert is idempotent — safe to call on re-upload
-    collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
-    log.info("ChromaDB: upserted %d chunks for doc_id=%s (%s)", len(chunks), doc_id, filename)
-    return len(chunks)
+    # upsert in batches — avoids HTTP timeout when embedding hundreds of chunks
+    total_upserted = 0
+    for start in range(0, len(ids), EMBEDDING_BATCH_SIZE):
+        end = start + EMBEDDING_BATCH_SIZE
+        collection.upsert(
+            ids=ids[start:end],
+            documents=documents[start:end],
+            metadatas=metadatas[start:end],
+        )
+        total_upserted += len(ids[start:end])
+        log.debug(
+            "ChromaDB: upserted batch %d-%d / %d for doc_id=%s",
+            start + 1, min(end, len(ids)), len(ids), doc_id,
+        )
+    log.info("ChromaDB: upserted %d chunks for doc_id=%s (%s)", total_upserted, doc_id, filename)
+    return total_upserted
 
 
 # ── BM25-style keyword scorer ──────────────────────────────────────────────

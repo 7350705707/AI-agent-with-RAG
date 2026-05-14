@@ -165,27 +165,27 @@ def init_db() -> None:
         pass
 
     # Ensure a default admin account exists
-    existing = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()
-    if not existing:
-        from app.auth import hash_password
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "INSERT INTO users (id, username, password, role, agents, is_active, created_at, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?)",
-            (
-                str(uuid.uuid4()),
-                "admin",
-                hash_password("admin123"),
-                "admin",
-                json.dumps(["chat", "general", "exam", "knowledge"]),
-                1,
-                now,
-                now,
-            ),
-        )
-        conn.commit()
+    # existing = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()
+    # if not existing:
+    #     from app.auth import hash_password
+    #     now = datetime.now(timezone.utc).isoformat()
+    #     conn.execute(
+    #         "INSERT INTO users (id, username, password, role, agents, is_active, created_at, updated_at) "
+    #         "VALUES (?,?,?,?,?,?,?,?)",
+    #         (
+    #             str(uuid.uuid4()),
+    #             "admin",
+    #             hash_password("admin123"),
+    #             "admin",
+    #             json.dumps(["chat", "general", "exam", "knowledge"]),
+    #             1,
+    #             now,
+    #             now,
+    #         ),
+    #     )
+    #     conn.commit()
 
-    conn.close()
+    # conn.close()
 
 
 # ── CRUD helpers ───────────────────────────────────────────────────────────

@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 
 from app.database import init_db
 from app.llm import ensure_model_loaded
+from app.chroma_store import check_embedding_health
 from app.mcp_server import mcp as mcp_server
 
 # ── Controllers (domain routers) ───────────────────────────────────────────
@@ -173,7 +174,32 @@ def startup():
     log.info("Sarvam AI backend starting up…")
     init_db()
     log.info("Database initialised.")
-    # Load model in background so the server is immediately ready
+
+    # ── Embedding health check ──────────────────────────────────────────────
+    from app.config import EMBEDDING_MODE
+    embed_status = check_embedding_health()
+    if embed_status["lmstudio_available"]:
+        log.info(
+            "Embedding: LM Studio reachable at %s (mode=%s).",
+            embed_status["lmstudio_url"], EMBEDDING_MODE,
+        )
+    elif EMBEDDING_MODE == "lmstudio":
+        # Hard stop — operator explicitly required LM Studio embeddings
+        raise RuntimeError(
+            "EMBEDDING_MODE=lmstudio but LM Studio /v1/embeddings is not reachable "
+            f"({embed_status['lmstudio_url']}). "
+            "Load an embedding model in LM Studio or set EMBEDDING_MODE=auto."
+        )
+    else:
+        log.warning(
+            "Embedding: LM Studio NOT reachable (%s). "
+            "Falling back to ONNX (all-MiniLM-L6-v2). "
+            "Vectors indexed now will differ from any previously indexed with LM Studio. "
+            "Run POST /api/admin/reindex after LM Studio becomes available to fix this.",
+            embed_status.get("error", "unknown error"),
+        )
+
+    # Load LLM model in background so the server is immediately ready
     threading.Thread(target=ensure_model_loaded, daemon=True).start()
     log.info("Startup complete.")
 

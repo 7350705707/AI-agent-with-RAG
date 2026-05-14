@@ -21,6 +21,27 @@ import logging
 import re
 from typing import Generator, Optional
 
+# Patterns that signal the user wants more / deeper details — likely about
+# content that was already retrieved from the knowledge base in a prior turn.
+# When matched we inject the force-search override so the LLM re-queries the DB.
+_FOLLOWUP_DETAIL_PATTERNS = re.compile(
+    r"\b("
+    r"(more|further|additional|extra|deeper|detailed?)\s+(details?|information|info|explanation|context|data|content)"
+    r"|tell me more"
+    r"|explain (more|further|in (more |greater )?detail|it|this|that|them)"
+    r"|give (me )?(more|details?|more details?|more information|more info)"
+    r"|what else (does|do|is|are|can)"
+    r"|any (other|more|additional) (information|info|details?|facts?|points?)"
+    r"|can you (elaborate|expand|explain more|go deeper|give more)"
+    r"|more (about|on|regarding) (this|that|it|them)"
+    r"|elaborate (on|about)"
+    r"|expand (on|about)"
+    r"|specific(ally)? (about|on|regarding)"
+    r"|in (more |greater )?(depth|detail)"
+    r")",
+    re.IGNORECASE,
+)
+
 # Keywords that signal the user explicitly wants a database / document search
 _EXPLICIT_SEARCH_PATTERNS = re.compile(
     r"\b("
@@ -98,8 +119,9 @@ AGENT_TOOLS = [
             "name": "expand_search_keywords",
             "description": (
                 "Generate synonyms and related domain terms for a search query. "
-                "Use this when search_knowledge_base returns no useful results, "
-                "to discover alternate terminology the documents might use."
+                "search_knowledge_base already calls this automatically, so you "
+                "only need to call it explicitly when you want to inspect the "
+                "expanded terms yourself before deciding how to search."
             ),
             "parameters": {
                 "type": "object",
@@ -203,12 +225,35 @@ def _format_search_results(results: list) -> str:
 
 
 def _tool_search_knowledge_base(query: str, limit: int = 5) -> str:
-    """Execute a hybrid knowledge-base search and return formatted results."""
+    """Execute a hybrid knowledge-base search and return formatted results.
+
+    Automatically expands the query with synonyms/related terms before searching
+    so that small models (which rarely chain expand_search_keywords → search)
+    still benefit from broader retrieval on every call.
+    """
     limit = min(max(1, int(limit)), 10)
     if get_knowledge_chunk_count() == 0:
         return "No documents have been uploaded to the knowledge base yet."
 
-    results = search_knowledge(query, limit=limit)
+    # --- automatic server-side query expansion ---
+    expanded_terms = _tool_expand_search_keywords(query)
+    # expanded_terms may be the original query (on failure) or a comma/newline
+    # separated list of related keywords returned by the LLM.
+    # Build a combined search query: original + expanded keywords.
+    if expanded_terms and expanded_terms.strip() != query.strip():
+        combined_query = f"{query} {expanded_terms}"
+        log.debug("Auto-expanded query: %r → %r", query, combined_query)
+    else:
+        combined_query = query
+
+    # Search with the combined (expanded) query first for broader recall.
+    results = search_knowledge(combined_query, limit=limit)
+
+    # If the expanded query found nothing, fall back to the original bare query.
+    if not results and combined_query != query:
+        log.debug("Expanded search found nothing; retrying with original query.")
+        results = search_knowledge(query, limit=limit)
+
     if not results:
         return f"No relevant content found for query: '{query}'"
 
@@ -340,13 +385,42 @@ _SYSTEM_PROMPT = (
     "- If the question is about specific uploaded documents, technical details you are "
     "uncertain about, or information that is likely in the knowledge base, "
     "call search_knowledge_base FIRST, then answer.\n"
-    "- If search_knowledge_base returns no useful results, call expand_search_keywords "
-    "and try one more search with the expanded terms before concluding the documents "
+    "- FOLLOW-UP DETAIL RULE: If the user asks for 'more details', 'explain further', "
+    "'give me more information', 'elaborate', 'what else', or any follow-up requesting "
+    "deeper or additional specifics about a topic — look at the conversation history to "
+    "identify the original topic, then call search_knowledge_base with a FOCUSED, SPECIFIC "
+    "query on that topic. Do NOT rely solely on the previous answer already in history; "
+    "the documents may contain additional relevant content not yet shown.\n"
+    "- search_knowledge_base automatically expands your query with related terms before "
+    "searching, so a single focused call is usually sufficient. Only call "
+    "expand_search_keywords explicitly if you want to review the expanded terms first.\n"
+    "- If search_knowledge_base still returns no useful results after automatic expansion, "
+    "try one more search with a rephrased query before concluding the documents "
     "don't cover the topic.\n"
     "- Never call tools for greetings, simple math, or questions clearly about the "
-    "ongoing conversation.\n\n"
+    "ongoing conversation (unless they ask for more detail about a document topic).\n\n"
+    "MANDATORY TOPIC VERIFICATION (critical — follow without exception):\n"
+    "When search_knowledge_base returns results, you MUST verify that each result chunk "
+    "is genuinely about the EXACT topic, operation, event, or entity the user asked about. "
+    "If the chunks discuss a DIFFERENT operation, event, law, or subject than what was asked "
+    "(e.g. 'Operation Sindoor' chunks returned for a 'Kargil War' query, or 'Assam Rifles Act' "
+    "chunks returned for a 'BSF Act' query), those chunks are NOT relevant and must NOT be used "
+    "to answer the question. In that case, tell the user: "
+    "'The uploaded documents do not contain information about [user's exact topic].' "
+    "then answer from your own general knowledge.\n\n"
+    "TEMPORAL / RECENCY RULE: When the user asks for the 'latest', 'most recent', 'current', "
+    "'newest', or 'last' occurrence of something, scan ALL retrieved chunks for explicit or implied "
+    "dates (years, months, named events with known dates). Identify the chunk with the MOST RECENT "
+    "date and use THAT as your primary answer. Do NOT default to whichever chunk appears first or "
+    "uses the word 'latest' in its own text — that word in a document refers to that document's "
+    "own context, not to the current date. "
+    "CRITICAL: The most recent event found in the retrieved documents IS the correct answer. "
+    "Do NOT say 'the documents do not contain this information' just because you believe something "
+    "newer might exist outside the documents. If a document mentions an attack from April 2025 and "
+    "another from 2008, the April 2025 event IS the latest in the documents — present it as such. "
+    "Never use your training cut-off date as a reason to dismiss or override document content.\n\n"
     "CITATION RULES:\n"
-    "- Cite [filename] ONLY for facts retrieved from that document.\n"
+    "- Cite [filename] ONLY for facts retrieved from that document and confirmed to be about the user's topic.\n"
     "- Never fabricate citations. Label your own knowledge as 'From general knowledge:' "
     "with no citation.\n\n"
     "PERSONAL INFO: When the user asks about their own name, job, location, or other "
@@ -369,16 +443,108 @@ def _build_system_messages(user_facts: str = "") -> list:
     return msgs
 
 # Injected as an extra SystemMessage when the user explicitly asks to search documents
+# or requests more details about a previously discussed topic.
 _FORCE_SEARCH_OVERRIDE = (
-    "OVERRIDE: The user has explicitly asked you to search the knowledge base / database. "
-    "You MUST call search_knowledge_base at least once before answering, "
-    "regardless of whether you think you already know the answer."
+    "OVERRIDE: The user has explicitly asked you to search the knowledge base / database, "
+    "OR is requesting more details about a topic that may have prior content in the documents. "
+    "You MUST call search_knowledge_base at least once before answering. "
+    "If this is a follow-up for more details, look at the conversation history to identify "
+    "the original topic and search with a SPECIFIC, FOCUSED query on that topic — "
+    "do NOT search for 'more details' literally; search for the actual subject matter."
 )
 
 
 def _detect_explicit_search_intent(query: str) -> bool:
     """Return True when the user explicitly asks to search documents/database."""
     return bool(_EXPLICIT_SEARCH_PATTERNS.search(query))
+
+
+def _is_followup_detail_request(query: str) -> bool:
+    """Return True when the user is asking for more detail/elaboration.
+
+    Unlike _detect_explicit_search_intent, this does NOT hard-force a KB search.
+    Instead it triggers a soft hint so the LLM can decide whether its own
+    knowledge is sufficient before calling a tool.
+    """
+    return bool(_FOLLOWUP_DETAIL_PATTERNS.search(query))
+
+
+# ── KB-grounded conversation detection ────────────────────────────────────
+
+# Stop-words used to check whether a query has meaningful topic content
+_TOPIC_STOP = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "do", "does", "did", "have", "has", "had", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "i", "me", "my", "we", "our",
+    "you", "your", "it", "its", "this", "that", "these", "those",
+    "what", "how", "why", "where", "when", "who", "which",
+    "and", "or", "but", "so", "yet", "for", "nor", "with", "in", "on",
+    "at", "to", "of", "about", "from", "by", "into", "than", "then",
+    "please", "tell", "give", "show", "explain", "describe", "list",
+    "hi", "hello", "hey", "ok", "okay", "yes", "no", "sure", "thanks",
+})
+
+
+def _has_topic_words(text: str, min_words: int = 2) -> bool:
+    """Return True when *text* contains ≥ min_words non-trivial content words.
+
+    Filters out stop-words and very short tokens so greetings and meta-phrases
+    ("ok", "yes please", "hi") do not trigger unnecessary KB searches.
+    """
+    words = {
+        w for w in re.findall(r"\w+", text.lower())
+        if w not in _TOPIC_STOP and len(w) > 2
+    }
+    return len(words) >= min_words
+
+
+def _conversation_has_kb_sources(conversation_id: str, lookback: int = 4) -> bool:
+    """Return True when any of the last *lookback* assistant messages in this
+    conversation have associated knowledge-base sources stored in the DB.
+
+    The sources field is populated by the router whenever the agentic loop
+    or RAG pipeline retrieves content from uploaded documents.  This is more
+    reliable than scanning assistant text for inline citations, since smaller
+    local LLMs often paraphrase rather than copy the exact filename.
+
+    When this returns True the conversation is KB-grounded, meaning follow-up
+    questions about the same topic should re-search the knowledge base even if
+    the LLM believes it already knows the answer from general knowledge.
+    """
+    try:
+        from app.database import get_messages
+        msgs = get_messages(conversation_id)
+        recent_asst = [m for m in msgs if m["role"] == "assistant"][-lookback:]
+        return any(m.get("sources") for m in recent_asst)
+    except Exception as exc:
+        log.debug("_conversation_has_kb_sources: %s", exc)
+        return False
+
+
+# Injected when the user asks for more detail but the conversation has NO prior
+# KB sources — soft guidance only, LLM decides based on its own knowledge.
+_DETAIL_SOFT_HINT = (
+    "GUIDANCE: The user is asking for more details or elaboration. "
+    "If you have comprehensive, complete knowledge to fully answer this question, "
+    "answer directly from your own knowledge. "
+    "However, if you are uncertain, lack specific details, or the topic might be "
+    "covered in the uploaded documents, call search_knowledge_base FIRST with a "
+    "focused query on the topic before answering."
+)
+
+# Injected when the conversation is KB-grounded and the user asks a substantive
+# follow-up question that the LLM might otherwise answer from general knowledge.
+_KB_GROUNDED_FOLLOWUP_OVERRIDE = (
+    "CONTEXT RULE — DOCUMENT-GROUNDED CONVERSATION: The conversation history shows "
+    "that previous answers in this chat were retrieved from uploaded knowledge base "
+    "documents (sources are attached to prior messages). This is an ongoing discussion "
+    "about content from those documents.\n"
+    "MANDATORY: You MUST call search_knowledge_base FIRST with a focused, specific query "
+    "about the topic being asked before answering. The uploaded documents likely contain "
+    "more detailed or precise information than your general knowledge on this subject. "
+    "Do NOT answer from general knowledge alone — always search the documents first in "
+    "this conversation."
+)
 
 
 # ── Sync agentic chat ──────────────────────────────────────────────────────
@@ -396,6 +562,12 @@ def run_agentic_chat(
     if _detect_explicit_search_intent(user_input):
         log.info("Explicit search intent detected — injecting force-search override.")
         system_msgs.append(SystemMessage(content=_FORCE_SEARCH_OVERRIDE))
+    elif _has_topic_words(user_input) and _conversation_has_kb_sources(conversation_id):
+        log.info("KB-grounded conversation — injecting follow-up search override.")
+        system_msgs.append(SystemMessage(content=_KB_GROUNDED_FOLLOWUP_OVERRIDE))
+    elif _is_followup_detail_request(user_input):
+        log.info("Follow-up detail request (no KB context) — injecting soft search hint.")
+        system_msgs.append(SystemMessage(content=_DETAIL_SOFT_HINT))
     messages: list = system_msgs + history + [HumanMessage(content=user_input)]
 
     for attempt in range(2):
@@ -495,6 +667,12 @@ def run_agentic_chat_stream(
     if _detect_explicit_search_intent(user_input):
         log.info("Explicit search intent detected — injecting force-search override.")
         system_msgs.append(SystemMessage(content=_FORCE_SEARCH_OVERRIDE))
+    elif _has_topic_words(user_input) and _conversation_has_kb_sources(conversation_id):
+        log.info("KB-grounded conversation — injecting follow-up search override.")
+        system_msgs.append(SystemMessage(content=_KB_GROUNDED_FOLLOWUP_OVERRIDE))
+    elif _is_followup_detail_request(user_input):
+        log.info("Follow-up detail request (no KB context) — injecting soft search hint.")
+        system_msgs.append(SystemMessage(content=_DETAIL_SOFT_HINT))
 
     # Combine uploaded file content directly into the user message for analysis
     combined_input = user_input

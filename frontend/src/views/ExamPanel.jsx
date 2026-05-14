@@ -332,7 +332,7 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
   // Exam paper header fields
   const [subjectName, setSubjectName] = useState('');
   const [instructorName, setInstructorName] = useState('');
-  const [institution, setInstitution] = useState('');
+  
   const [examDate, setExamDate] = useState(new Date().toISOString().slice(0, 10));
   const [totalMarks, setTotalMarks] = useState('');
   const [timeAllowed, setTimeAllowed] = useState('');
@@ -709,7 +709,6 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
           {showHeaderForm && (
             <div className="grid grid-cols-2 gap-3 px-4 pb-4 pt-1">
               {[
-                { label: 'Institution', value: institution, set: setInstitution, colSpan: true },
                 { label: 'Subject', value: subjectName, set: setSubjectName },
                 { label: 'Instructor', value: instructorName, set: setInstructorName },
                 { label: 'Date', value: examDate, set: setExamDate, type: 'date' },

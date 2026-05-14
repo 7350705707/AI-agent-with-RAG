@@ -16,9 +16,9 @@ services:
       # WARNING: do NOT change this to "localhost" — inside a container, localhost
       #          is the container itself, not the machine running LM Studio.
       - LM_STUDIO_BASE_URL=http://host.docker.internal:1234/v1
-      - LLM_MODEL=${LLM_MODEL:-nemotron-3-nano-4b}
+      - LLM_MODEL=${LLM_MODEL:-qwen2.5-7b-instruct-1m}
       # Broaden CORS so the app works from any local IP / hostname
-      - CORS_ORIGINS=http://localhost:8000,http://127.0.0.1:8000,http://localhost,http://127.0.0.1
+      - CORS_ORIGINS=http://localhost:8000,http://localhost:3000,http://127.0.0.1:8000,http://localhost,http://127.0.0.1
     volumes:
       # Persist user data on the host so it survives container restarts / upgrades
       - ./backend/uploads:/app/uploads

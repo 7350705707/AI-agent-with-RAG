@@ -69,6 +69,66 @@ def _is_history_meta_query(query: str) -> bool:
     return bool(_HISTORY_META_RE.search(query))
 
 
+def _conversation_has_kb_sources(conversation_id: str, lookback: int = 4) -> bool:
+    """Return True if any of the last *lookback* assistant messages have KB sources.
+
+    Used to detect KB-grounded conversations so that follow-up questions always
+    trigger a fresh search even when the LLM might otherwise answer from
+    general knowledge (e.g. "explain courts of assam rifles" after the previous
+    turn returned content from 'Assam Rifles Act 2006.pdf').
+    """
+    try:
+        from app.database import get_messages
+        msgs = get_messages(conversation_id)
+        recent_asst = [m for m in msgs if m["role"] == "assistant"][-lookback:]
+        return any(m.get("sources") for m in recent_asst)
+    except Exception as exc:
+        log.debug("_conversation_has_kb_sources: %s", exc)
+        return False
+
+
+def _build_rag_search_query(user_input: str, conversation_id: str) -> str:
+    """Build an enriched search query for RAG retrieval.
+
+    Two cases are handled:
+
+    1. Vague follow-ups (e.g. "tell me more details", "explain further") have no
+       useful topic words for the vector DB.  Re-use the last substantive user
+       question instead.
+
+    2. KB-grounded conversation: even if the current query is substantive, the
+       DB search may return empty if the embedding match is weak.  When the
+       conversation is KB-grounded, combine the current query with the last
+       substantive topic to broaden the search surface.
+    """
+    kb_grounded = _conversation_has_kb_sources(conversation_id)
+
+    if _is_substantive_query(user_input):
+        if kb_grounded:
+            # Try to enrich: combine current query with last substantive topic
+            recent = get_recent_exchanges(conversation_id, n=3)
+            for ex in reversed(recent):
+                last_user = ex.get("user", "")
+                if _is_substantive_query(last_user) and last_user.lower() != user_input.lower():
+                    combined = f"{user_input} {last_user}"
+                    log.debug(
+                        "KB-grounded — enriching RAG query: %r + %r", user_input, last_user
+                    )
+                    return combined
+        return user_input
+
+    # Vague follow-up: re-use the last substantive user question as the DB query
+    recent = get_recent_exchanges(conversation_id, n=3)
+    for ex in reversed(recent):
+        last_user = ex.get("user", "")
+        if _is_substantive_query(last_user):
+            log.debug(
+                "Vague follow-up — using previous query for RAG search: %r", last_user
+            )
+            return last_user
+    return user_input
+
+
 def _build_history(conversation_id: str, query: str = "", max_pairs: int = 5, user_id: str | None = None) -> list:
     """Return the most relevant past exchanges from the markdown history store.
 
@@ -138,6 +198,9 @@ def _normalize_query(user_input: str) -> str:
     return user_input
 
 
+_MIN_RELEVANCE_SCORE = 0.50  # Chunks below this cosine-similarity score are discarded
+                              # to prevent weakly-related documents from polluting answers
+
 def _get_rag_context(search_query: str, original_query: str | None = None) -> tuple[str, list[dict]]:
     """Search knowledge base and return (context_string, source_docs).
 
@@ -155,6 +218,14 @@ def _get_rag_context(search_query: str, original_query: str | None = None) -> tu
             results = search_knowledge(corrected, limit=6)
 
     if not results:
+        return "", []
+
+    # Filter out chunks whose vector similarity is too low — these are likely from
+    # a document about a *different* topic that happens to be semantically adjacent
+    # (e.g. "Operation Sindoor" chunks returned for a "Kargil War" query).
+    results = [r for r in results if r.get("score", 0.0) >= _MIN_RELEVANCE_SCORE]
+    if not results:
+        log.debug("All retrieved chunks scored below threshold %.2f — skipping RAG context", _MIN_RELEVANCE_SCORE)
         return "", []
     sources = {}
     context_parts = []
@@ -190,7 +261,8 @@ def _get_rag_context(search_query: str, original_query: str | None = None) -> tu
 def run_chat(conversation_id: str, user_input: str, user_id: str | None = None) -> str:
     """RAG pipeline: (1) hybrid retrieve, (2) answer. Retries with reduced context on overflow."""
     history = _build_history(conversation_id, query=user_input, user_id=user_id)
-    context, _sources = _get_rag_context(user_input, original_query=user_input)
+    search_query = _build_rag_search_query(user_input, conversation_id)
+    context, _sources = _get_rag_context(search_query, original_query=user_input)
     user_facts = format_user_facts(user_id)
     for attempt in range(3):
         llm = get_llm(temperature=0.2)
@@ -222,7 +294,8 @@ def run_chat(conversation_id: str, user_input: str, user_id: str | None = None) 
 def run_chat_stream(conversation_id: str, user_input: str, stop_event=None, user_id: str | None = None):
     """RAG pipeline with streaming. Yields (token, sources) tuples. Retries on context overflow."""
     history = _build_history(conversation_id, query=user_input, user_id=user_id)
-    context, source_docs = _get_rag_context(user_input, original_query=user_input)
+    search_query = _build_rag_search_query(user_input, conversation_id)
+    context, source_docs = _get_rag_context(search_query, original_query=user_input)
     user_facts = format_user_facts(user_id)
     for attempt in range(3):
         llm = get_llm_streaming(temperature=0.2)

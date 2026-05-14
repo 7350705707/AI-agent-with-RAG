@@ -53,6 +53,7 @@ backend/faiss_index/
 backend/knowledge_files/
 backend/logs/
 backend/history/
+lmstudio-community/
 
 # ─── Node / Frontend ─────────────────────────────────────────────────────────
 node_modules/
