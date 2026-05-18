@@ -153,7 +153,11 @@ def api_knowledge_index(
     if not doc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
     file_path = doc.get("file_path", "")
-    if not file_path or not Path(file_path).is_file():
+    resolved = Path(file_path) if file_path else None
+    if not resolved or not resolved.is_file():
+        # Stored path may be from a different OS/environment; reconstruct from KNOWLEDGE_DIR
+        resolved = KNOWLEDGE_DIR / doc_id / doc["filename"]
+    if not resolved.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not available on disk")
 
     def _index(path: Path, d_id: str, fname: str) -> None:
@@ -170,7 +174,7 @@ def api_knowledge_index(
         except Exception as exc:
             log.error("Manual index failed for '%s': %s", fname, exc, exc_info=True)
 
-    background_tasks.add_task(_index, Path(file_path), doc_id, doc["filename"])
+    background_tasks.add_task(_index, resolved, doc_id, doc["filename"])
     return {"detail": "Indexing started", "doc_id": doc_id}
 
 
@@ -213,10 +217,14 @@ def api_knowledge_download(
     if not doc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
     file_path = doc.get("file_path", "")
-    if not file_path or not Path(file_path).is_file():
+    resolved = Path(file_path) if file_path else None
+    if not resolved or not resolved.is_file():
+        # Stored path may be from a different OS/environment; reconstruct from KNOWLEDGE_DIR
+        resolved = KNOWLEDGE_DIR / doc_id / doc["filename"]
+    if not resolved.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not available on disk")
     return FileResponse(
-        path=file_path,
+        path=resolved,
         filename=doc["filename"],
         media_type="application/octet-stream",
     )

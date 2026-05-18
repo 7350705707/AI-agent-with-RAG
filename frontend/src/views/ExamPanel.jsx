@@ -7,12 +7,13 @@ import {
   CheckCircle2,
   XCircle,
   File,
-  FileDown,
   Square,
   CheckSquare,
-  ChevronDown,
+  X,
+  ClipboardCheck,
+  ChevronRight,
 } from 'lucide-react';
-import { sendExamStream, getMessages, createConversation, uploadFile, renameConversation } from '../api';
+import { sendExamStream, getMessages, createConversation, uploadFile, renameConversation, fetchExamTopics, getApprovalOfficers, submitExamForApproval } from '../api';
 import MessageBubble from '../components/MessageBubble';
 
 const ACCEPT = '.pdf,.docx,.pptx';
@@ -29,337 +30,347 @@ function escapeHtml(str) {
 }
 
 function renderExamHeader(header = {}) {
-  const { subjectName, instructorName, institution, examDate, totalMarks, timeAllowed } = header;
-  const hasAny = subjectName || instructorName || institution || examDate || totalMarks || timeAllowed;
+  const { subjectName, instructorName, courseName, examDate, totalMarks, timeAllowed, studentLevel } = header;
+  const hasAny = subjectName || instructorName || courseName || examDate || totalMarks || timeAllowed;
   if (!hasAny) return '';
-  const cell = (label, value) => value
-    ? `<tr>
-        <td style="padding:6px 12px;font-weight:600;background:#f3f4f6;color:#374151;width:26%;white-space:nowrap;border:1px solid #d1d5db;">${escapeHtml(label)}</td>
-        <td style="padding:6px 12px;border:1px solid #d1d5db;">${escapeHtml(value)}</td>
-       </tr>`
+  const cols = [
+    ['Subject', subjectName],
+    ['Instructor', instructorName],
+    ['Date', examDate],
+    ['Course', courseName],
+  ].filter(([, v]) => v);
+  const meta = [
+    totalMarks && `Total Marks: ${escapeHtml(totalMarks)}`,
+    timeAllowed && `Time: ${escapeHtml(timeAllowed)}`,
+    studentLevel && `Level: ${escapeHtml(studentLevel)}`,
+  ].filter(Boolean);
+  const colsHtml = cols.length
+    ? `<table style="width:100%;border-collapse:collapse;margin-bottom:6px;font-size:12px;">
+        <tr>${cols.map(([l, v]) => `<td style="padding:6px 10px;border:1px solid #d1d5db;"><b>${escapeHtml(l)}:</b> ${escapeHtml(v)}</td>`).join('')}</tr>
+       </table>`
     : '';
-  const instRow = institution
-    ? `<tr><td colspan="2" style="padding:10px 12px;font-size:15px;font-weight:700;text-align:center;background:#f9fafb;border:1px solid #d1d5db;">${escapeHtml(institution)}</td></tr>`
+  const metaHtml = meta.length
+    ? `<p style="font-size:11px;color:#6b7280;margin:0 0 14px;text-align:center;">${meta.join(' &nbsp;|&nbsp; ')}</p>`
     : '';
-  return `<table style="width:100%;border-collapse:collapse;margin-bottom:24px;font-size:13px;">
-    ${instRow}
-    ${cell('Subject', subjectName)}
-    ${cell('Instructor', instructorName)}
-    ${cell('Date', examDate)}
-    ${cell('Total Marks', totalMarks)}
-    ${cell('Time Allowed', timeAllowed)}
-  </table>`;
+  return colsHtml + metaHtml;
 }
 
-function buildPrompt(mcqCount, tfCount, fitbCount, extra, ratios) {
+function buildPrompt(mcqCount, tfCount, fitbCount, extra, ratios, selectedTopics = [], studentLevel = '') {
   const parts = [];
   if (mcqCount > 0) parts.push(`${mcqCount} MCQ questions`);
   if (tfCount > 0) parts.push(`${tfCount} True or False questions`);
   if (fitbCount > 0) parts.push(`${fitbCount} Fill in the Blanks questions`);
   const { easy, medium, hard } = ratios;
   const ratioStr = `(Easy ${easy}% / Medium ${medium}% / Hard ${hard}%)`;
+  const levelStr = studentLevel ? ` Target student level: ${studentLevel}.` : '';
   const base = parts.length
-    ? `Generate an exam paper ${ratioStr} with ${parts.join(', ')}.`
-    : `Generate an exam paper ${ratioStr}.`;
-  return extra.trim() ? `${base} Additional instructions: ${extra.trim()}` : base;
+    ? `Generate an exam paper ${ratioStr} with ${parts.join(', ')}.${levelStr}`
+    : `Generate an exam paper ${ratioStr}.${levelStr}`;
+  const checkedTopics = (selectedTopics || []).filter((t) => t.checked);
+  const topicsStr = checkedTopics.length
+    ? ` Focus on these topics with the given percentage weights: ${checkedTopics.map((t) => `"${t.name}" (${t.weight}%)`).join(', ')}.`
+    : '';
+  const combined = base + topicsStr;
+  return extra.trim() ? `${combined} Additional instructions: ${extra.trim()}` : combined;
 }
 
-function renderQuestionsToHtml(questions, includeAnswerKey = true) {
-  const sections = { mcq: [], true_false: [], fill_blank: [] };
-  questions.forEach((q) => { if (sections[q.type]) sections[q.type].push(q); });
+// ── Question normalization ────────────────────────────────────────────────
 
-  // Renumber sequentially within each section (Q1, Q2, Q3…) regardless of original numbers
-  const numbered = {};
-  Object.entries(sections).forEach(([type, qs]) => {
-    numbered[type] = qs.map((q, i) => ({ ...q, exportNum: i + 1 }));
-  });
-
-  let html = '';
-  const sectionLabels = {
-    mcq: 'Section A: Multiple Choice Questions',
-    true_false: 'Section B: True / False',
-    fill_blank: 'Section C: Fill in the Blanks',
-  };
-
-  Object.entries(numbered).forEach(([type, qs]) => {
-    if (!qs.length) return;
-    html += `<h2 style="margin-top:24px;font-size:15px;">${sectionLabels[type]}</h2>`;
-    qs.forEach((q) => {
-      html += `<p style="margin:10px 0 4px;"><b>Q${q.exportNum}.</b> ${q.text.replace(/</g, '&lt;')}</p>`;
-      if (type === 'mcq' && q.options.length) {
-        q.options.forEach((opt) => {
-          html += `<p style="margin:2px 0 2px 20px;">${opt.replace(/</g, '&lt;')}</p>`;
-        });
-      }
+function normalizeQuestions(raw) {
+  if (!Array.isArray(raw) || !raw.length) return [];
+  const VALID_TYPES = new Set(['mcq', 'true_false', 'fill_blank']);
+  let n = 1;
+  const result = [];
+  for (const q of raw) {
+    const text = (q.text || q.stem || q.question || '').trim();
+    if (!text) continue;
+    let type = q.type;
+    if (!VALID_TYPES.has(type)) {
+      type = (Array.isArray(q.options) && q.options.length >= 2) ? 'mcq' : 'fill_blank';
+    }
+    // Ensure fill_blank questions contain a blank marker
+    let finalText = text;
+    if (type === 'fill_blank' && !finalText.includes('_')) {
+      finalText = finalText.replace(/\.?\s*$/, '') + ' ______.';
+    }
+    result.push({
+      number: n++,
+      type,
+      text: finalText,
+      options: Array.isArray(q.options) ? q.options : [],
+      answer: q.answer || '',
     });
-  });
-
-  if (includeAnswerKey && questions.some((q) => q.answer)) {
-    html += `<h2 style="margin-top:28px;font-size:15px;">Answer Key</h2>`;
-    ['mcq', 'true_false', 'fill_blank'].forEach((type) => {
-      const qs = numbered[type].filter((q) => q.answer);
-      if (!qs.length) return;
-      const labels = { mcq: 'MCQ', true_false: 'True/False', fill_blank: 'Fill in Blanks' };
-      html += `<p style="margin:6px 0;"><b>${labels[type]}:</b> ${qs.map((q) => `${q.exportNum}. ${q.answer}`).join(' | ')}</p>`;
-    });
-  }
-  return html;
-}
-
-// -- Shuffle helpers ----------------------------------------------------------
-
-function shuffleArray(arr) {
-  const result = [...arr];
-  for (let i = result.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [result[i], result[j]] = [result[j], result[i]];
   }
   return result;
 }
 
-function shuffleWithinTypes(questions) {
-  const sections = { mcq: [], true_false: [], fill_blank: [] };
-  questions.forEach((q) => { if (sections[q.type]) sections[q.type].push(q); });
-  return [
-    ...shuffleArray(sections.mcq),
-    ...shuffleArray(sections.true_false),
-    ...shuffleArray(sections.fill_blank),
-  ];
-}
+// -- Exam Configuration Modal ─────────────────────────────────────────────
 
-const SET_LABELS = ['A', 'B', 'C', 'D'];
+function ExamConfigModal({
+  open, onClose, onGenerate,
+  subjectName, setSubjectName, instructorName, setInstructorName,
+  institution, setInstitution, courseName, setCourseName, examDate, setExamDate,
+  totalMarks, setTotalMarks, timeAllowed, setTimeAllowed,
+  studentLevel, setStudentLevel,
+  mcqCount, setMcqCount, tfCount, setTfCount, fitbCount, setFitbCount,
+  easyRatio, setEasyRatio, mediumRatio, setMediumRatio, hardRatio, setHardRatio,
+  extraInput, setExtraInput,
+  rawTopics, topicsLoading, topicsError,
+}) {
+  const [topicSel, setTopicSel] = useState([]);
 
-// -- Export functions (4 shuffled sets) ---------------------------------------
+  useEffect(() => {
+    if (!rawTopics || !rawTopics.length) { setTopicSel([]); return; }
+    const w = Math.floor(100 / rawTopics.length);
+    const rem = 100 - w * rawTopics.length;
+    setTopicSel(
+      rawTopics.map((t, i) => ({ name: t, checked: true, weight: i === 0 ? w + rem : w }))
+    );
+  }, [rawTopics]);
 
-function exportSelectedPdf(questions, title, header = {}) {
-  const headerHtml = renderExamHeader(header);
-  const sets = SET_LABELS.map((label) => ({
-    label,
-    questions: shuffleWithinTypes(questions),
-  }));
+  const toggleTopic = (i) =>
+    setTopicSel((prev) => prev.map((t, j) => (j === i ? { ...t, checked: !t.checked } : t)));
 
-  const win = window.open('', '_blank');
-  const allSetsHtml = sets.map(({ label, questions: qs }, idx) => {
-    const bodyHtml = renderQuestionsToHtml(qs, false);
-    return `<div class="${idx > 0 ? 'page-break' : ''}">
-      <h1>${escapeHtml(title)} &mdash; Set ${label}</h1>
-      ${headerHtml}
-      ${bodyHtml}
-    </div>`;
-  }).join('');
+  const setWeight = (i, val) =>
+    setTopicSel((prev) =>
+      prev.map((t, j) =>
+        j === i ? { ...t, weight: Math.max(0, Math.min(100, parseInt(val) || 0)) } : t
+      )
+    );
 
-  win.document.write(`<!DOCTYPE html><html><head><title>${escapeHtml(title)}</title>
-    <style>
-      body{font-family:Arial,sans-serif;padding:32px;color:#111;max-width:860px;margin:0 auto;line-height:1.6;}
-      h1{font-size:18px;margin-bottom:4px;}h2{font-size:15px;}
-      .meta{color:#888;font-size:12px;margin-bottom:24px;}
-      .page-break{page-break-before:always;padding-top:32px;}
-      @media print{body{padding:0}.page-break{page-break-before:always;}}
-    </style></head><body>
-    ${allSetsHtml}
-    </body></html>`);
-  win.document.close();
-  win.focus();
-  setTimeout(() => { win.print(); }, 300);
-}
+  const checkedWeightSum = topicSel.filter((t) => t.checked).reduce((s, t) => s + t.weight, 0);
+  const canGenerate = mcqCount > 0 || tfCount > 0 || fitbCount > 0;
 
-function exportSelectedJson(questions, title, header = {}) {
-  const baseFilename = title.replace(/\s+/g, '_');
-  SET_LABELS.forEach((label, idx) => {
-    const shuffled = shuffleWithinTypes(questions);
-    const sections = { mcq: [], true_false: [], fill_blank: [] };
-    shuffled.forEach((q) => { if (sections[q.type]) sections[q.type].push(q); });
-    const data = {
-      title: `${title} - Set ${label}`,
-      set: label,
-      header,
-      exported_at: new Date().toISOString(),
-      sections: Object.fromEntries(
-        Object.entries(sections).map(([type, qs]) => [
-          type,
-          qs.map((q, i) => ({
-            number: i + 1,
-            original_number: q.number,
-            text: q.text,
-            ...(q.options && q.options.length ? { options: q.options } : {}),
-            ...(q.answer ? { answer: q.answer } : {}),
-          })),
-        ])
-      ),
-    };
-    setTimeout(() => {
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${baseFilename}_Set_${label}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, idx * 400);
-  });
-}
+  if (!open) return null;
 
-function exportSelectedDoc(questions, title, header = {}) {
-  const headerHtml = renderExamHeader(header);
-  SET_LABELS.forEach((label, idx) => {
-    const shuffled = shuffleWithinTypes(questions);
-    const bodyHtml = renderQuestionsToHtml(shuffled);
-    const setTitle = `${title} - Set ${label}`;
-    const html = `<html xmlns:o='urn:schemas-microsoft-com:office:office'
-      xmlns:w='urn:schemas-microsoft-com:office:word'
-      xmlns='http://www.w3.org/TR/REC-html40'>
-      <head><meta charset='utf-8'><title>${escapeHtml(setTitle)}</title>
-      <style>body{font-family:Arial,sans-serif;padding:32px;line-height:1.6;}</style></head>
-      <body><h1>${escapeHtml(setTitle)}</h1>
-      ${headerHtml}
-      ${bodyHtml}
-      </body></html>`;
-    setTimeout(() => {
-      const blob = new Blob(['\ufeff', html], { type: 'application/msword' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${title.replace(/\s+/g, '_')}_Set_${label}.doc`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, idx * 400);
-  });
-}
-
-// -- Structured Questions Panel -----------------------------------------------
-
-function QuestionCard({ q, checked, onToggle }) {
   return (
-    <div
-      className={`flex gap-3 px-4 py-3 rounded-lg border cursor-pointer transition ${
-        checked
-          ? 'border-emerald-300 bg-emerald-50'
-          : 'border-indigo-100 bg-white hover:border-indigo-200 hover:bg-indigo-50/40'
-      }`}
-      onClick={onToggle}
-    >
-      <div className="mt-0.5 shrink-0">
-        {checked
-          ? <CheckSquare size={16} className="text-emerald-500" />
-          : <Square size={16} className="text-slate-300" />}
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm text-slate-700">
-          <span className="font-medium text-slate-400 mr-1">Q{q.number}.</span>
-          {q.text}
-        </p>
-        {q.type === 'mcq' && q.options.length > 0 && (
-          <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5">
-            {q.options.map((opt, i) => (
-              <p key={i} className="text-xs text-slate-400">{opt}</p>
-            ))}
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-xl flex flex-col max-h-[92vh]">
+
+        {/* Modal header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 shrink-0">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-emerald-100 flex items-center justify-center">
+              <FileText size={13} className="text-emerald-600" />
+            </div>
+            <h2 className="text-sm font-semibold text-slate-800">Configure Exam Paper</h2>
           </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function StructuredExamView({ questions, onExportPdf, onExportDoc, onExportJson }) {
-  const [selected, setSelected] = useState(() => new Set(questions.map((q) => q.number)));
-
-  const sections = [
-    { type: 'mcq', label: 'Section A: Multiple Choice Questions' },
-    { type: 'true_false', label: 'Section B: True / False' },
-    { type: 'fill_blank', label: 'Section C: Fill in the Blanks' },
-  ];
-
-  const toggle = (num) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      next.has(num) ? next.delete(num) : next.add(num);
-      return next;
-    });
-  };
-
-  const toggleSection = (type) => {
-    const nums = questions.filter((q) => q.type === type).map((q) => q.number);
-    const allChecked = nums.every((n) => selected.has(n));
-    setSelected((prev) => {
-      const next = new Set(prev);
-      nums.forEach((n) => (allChecked ? next.delete(n) : next.add(n)));
-      return next;
-    });
-  };
-
-  const selectedQuestions = questions.filter((q) => selected.has(q.number));
-
-  return (
-    <div className="mt-4 rounded-xl border border-emerald-200 bg-white overflow-hidden shadow-sm">
-      <div className="flex items-center justify-between gap-3 px-5 py-3 bg-emerald-50 border-b border-emerald-100">
-        <div className="flex items-center gap-2">
-          <CheckSquare size={15} className="text-emerald-500" />
-          <span className="text-sm font-medium text-emerald-700">
-            Select questions to export ({selected.size}/{questions.length})
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
           <button
-            onClick={() => onExportPdf(selectedQuestions)}
-            disabled={!selected.size}
-            title="Export 4 shuffled sets as PDF (Set A, B, C, D)"
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-600 border border-emerald-200 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition"
           >
-            <FileDown size={12} /> PDF ×4
-          </button>
-          <button
-            onClick={() => onExportDoc(selectedQuestions)}
-            disabled={!selected.size}
-            title="Download 4 shuffled sets as DOC files (Set A, B, C, D)"
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <FileDown size={12} /> DOC ×4
-          </button>
-          <button
-            onClick={() => onExportJson(selectedQuestions)}
-            disabled={!selected.size}
-            title="Download 4 shuffled sets as JSON files (Set A, B, C, D)"
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-violet-50 hover:bg-violet-100 text-violet-600 border border-violet-200 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <FileDown size={12} /> JSON ×4
+            <X size={15} />
           </button>
         </div>
-      </div>
 
-      <div className="px-5 py-4 space-y-6 max-h-[60vh] overflow-y-auto">
-        {sections.map(({ type, label }) => {
-          const qs = questions.filter((q) => q.type === type);
-          if (!qs.length) return null;
-          const sectionNums = qs.map((q) => q.number);
-          const allChecked = sectionNums.every((n) => selected.has(n));
-          return (
-            <div key={type}>
-              <div className="flex items-center justify-between mb-2">
-                <p className="text-xs uppercase tracking-wider text-slate-500 font-semibold">{label}</p>
-                <button
-                  onClick={() => toggleSection(type)}
-                  className="text-xs text-emerald-600 hover:text-emerald-800 transition"
-                >
-                  {allChecked ? 'Deselect all' : 'Select all'}
-                </button>
+        {/* Scrollable body */}
+        <div className="overflow-y-auto flex-1 px-6 py-5 space-y-6">
+
+          <div>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-3">Exam Paper Header</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Subject</label>
+                <input type="text" value={subjectName} onChange={(e) => setSubjectName(e.target.value)}
+                  placeholder="Subject name"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-500 transition" />
               </div>
-              <div className="space-y-2">
-                {qs.map((q) => (
-                  <QuestionCard
-                    key={q.number}
-                    q={q}
-                    checked={selected.has(q.number)}
-                    onToggle={() => toggle(q.number)}
-                  />
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Instructor</label>
+                <input type="text" value={instructorName} onChange={(e) => setInstructorName(e.target.value)}
+                  placeholder="Instructor name"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-500 transition" />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Course Name</label>
+                <input type="text" value={courseName} onChange={(e) => setCourseName(e.target.value)}
+                  placeholder="e.g. Advanced Mathematics"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-500 transition" />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Exam Date</label>
+                <input type="date" value={examDate} onChange={(e) => setExamDate(e.target.value)}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-500 transition" />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Total Marks</label>
+                <input type="number" value={totalMarks} onChange={(e) => setTotalMarks(e.target.value)}
+                  placeholder="e.g. 100"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-500 transition" />
+              </div>
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">Time Allowed</label>
+                <input type="text" value={timeAllowed} onChange={(e) => setTimeAllowed(e.target.value)}
+                  placeholder="e.g. 90 min"
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-500 transition" />
+              </div>
+            </div>
+            {/* Student Level */}
+            <div className="mt-3">
+              <label className="block text-[11px] text-slate-400 mb-2">Student Level</label>
+              <div className="flex gap-2">
+                {['Basic', 'Advanced Beginner', 'Competent'].map((lvl) => (
+                  <button
+                    key={lvl}
+                    type="button"
+                    onClick={() => setStudentLevel(lvl)}
+                    className={`px-3 py-1.5 rounded-lg text-xs border transition ${
+                      studentLevel === lvl
+                        ? 'bg-emerald-500 text-white border-emerald-500'
+                        : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-300'
+                    }`}
+                  >
+                    {lvl}
+                  </button>
                 ))}
               </div>
             </div>
-          );
-        })}
+          </div>
+
+          {/* — Question Counts — */}
+          <div>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-3">Number of Questions</p>
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                { label: 'MCQ', val: mcqCount, set: setMcqCount },
+                { label: 'True / False', val: tfCount, set: setTfCount },
+                { label: 'Fill in Blanks', val: fitbCount, set: setFitbCount },
+              ].map(({ label, val, set }) => (
+                <div key={label}>
+                  <label className="block text-[11px] text-slate-400 mb-1">{label}</label>
+                  <input type="number" min={0} max={100} value={val}
+                    onChange={(e) => set(Math.max(0, Math.min(100, parseInt(e.target.value) || 0)))}
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-center text-slate-700 outline-none focus:border-emerald-500 transition" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* — Difficulty — */}
+          <div>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-3">Difficulty Distribution</p>
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                { label: 'Easy %', val: easyRatio, set: setEasyRatio },
+                { label: 'Medium %', val: mediumRatio, set: setMediumRatio },
+                { label: 'Hard %', val: hardRatio, set: setHardRatio },
+              ].map(({ label, val, set }) => (
+                <div key={label}>
+                  <label className="block text-[11px] text-slate-400 mb-1">{label}</label>
+                  <input type="number" min={0} max={100} value={val}
+                    onChange={(e) => set(Math.max(0, Math.min(100, parseInt(e.target.value) || 0)))}
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-center text-slate-700 outline-none focus:border-emerald-500 transition" />
+                </div>
+              ))}
+            </div>
+            {easyRatio + mediumRatio + hardRatio !== 100 && (
+              <p className="mt-1.5 text-[11px] text-red-400">
+                Ratios must sum to 100% (current: {easyRatio + mediumRatio + hardRatio}%)
+              </p>
+            )}
+          </div>
+
+          {/* — Topics — */}
+          <div>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
+              Topics
+              {topicsLoading && (
+                <span className="flex items-center gap-1 text-emerald-500 font-normal normal-case text-[11px]">
+                  <Loader2 size={11} className="animate-spin" /> Extracting from document…
+                </span>
+              )}
+            </p>
+
+            {topicsLoading && !topicSel.length && (
+              <div className="flex items-center gap-3 py-3 px-4 rounded-lg bg-emerald-50 border border-emerald-100 text-sm text-emerald-600">
+                <Loader2 size={15} className="animate-spin shrink-0" />
+                Analyzing your document to identify topics…
+              </div>
+            )}
+
+            {topicsError && !topicsLoading && !topicSel.length && (
+              <div className="rounded-lg bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-700">
+                Topics could not be extracted automatically. You can still generate the exam without topic selection.
+              </div>
+            )}
+
+            {topicSel.length > 0 && (
+              <div>
+                <p className="text-[11px] text-slate-400 mb-2">
+                  Check topics to include and set a percentage weight for each.
+                  {topicSel.some((t) => t.checked) && checkedWeightSum !== 100 && (
+                    <span className="text-amber-500 ml-1">(Weights sum: {checkedWeightSum}%)</span>
+                  )}
+                </p>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                  {topicSel.map((t, i) => (
+                    <div
+                      key={i}
+                      onClick={() => toggleTopic(i)}
+                      className={`flex items-center gap-3 px-3 py-2 rounded-lg border cursor-pointer transition ${
+                        t.checked
+                          ? 'border-emerald-200 bg-emerald-50/70'
+                          : 'border-slate-100 bg-white hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="shrink-0">
+                        {t.checked
+                          ? <CheckSquare size={14} className="text-emerald-500" />
+                          : <Square size={14} className="text-slate-300" />}
+                      </div>
+                      <span className={`flex-1 text-sm truncate ${t.checked ? 'text-slate-700 font-medium' : 'text-slate-400'}`}>
+                        {t.name}
+                      </span>
+                      {t.checked && (
+                        <div
+                          className="flex items-center gap-1 shrink-0"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <input
+                            type="number" min={0} max={100} value={t.weight}
+                            onChange={(e) => setWeight(i, e.target.value)}
+                            className="w-14 border border-emerald-200 rounded-md px-1.5 py-0.5 text-xs text-center text-slate-700 outline-none focus:border-emerald-500 bg-white transition"
+                          />
+                          <span className="text-xs text-slate-400">%</span>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* — Additional Instructions — */}
+          <div>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider mb-3">Additional Instructions (Optional)</p>
+            <textarea
+              rows={2}
+              value={extraInput}
+              onChange={(e) => setExtraInput(e.target.value)}
+              placeholder="e.g. Focus on Chapter 3, avoid formula-heavy questions, use simple language…"
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-500 resize-none transition"
+            />
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-100 shrink-0">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onGenerate({ topicSel })}
+            disabled={!canGenerate}
+            className="flex items-center gap-2 px-5 py-2 text-sm font-medium bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
+          >
+            <Send size={13} />
+            Generate Exam
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -381,15 +392,32 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
   const [uploading, setUploading] = useState(false);
   const [streamContent, setStreamContent] = useState('');
   const [structuredQuestions, setStructuredQuestions] = useState(null);
-  const [showExportPanel, setShowExportPanel] = useState(false);
-  // Exam paper header fields
+  // Exam paper header fields (used for export)
   const [subjectName, setSubjectName] = useState('');
   const [instructorName, setInstructorName] = useState('');
   const [institution, setInstitution] = useState('');
+  const [courseName, setCourseName] = useState('');
   const [examDate, setExamDate] = useState(new Date().toISOString().slice(0, 10));
   const [totalMarks, setTotalMarks] = useState('');
   const [timeAllowed, setTimeAllowed] = useState('');
-  const [showHeaderForm, setShowHeaderForm] = useState(false);
+  const [studentLevel, setStudentLevel] = useState('Basic');
+  const [lastTopicSel, setLastTopicSel] = useState([]);
+  // Modal state
+  const [showModal, setShowModal] = useState(false);
+  const [rawTopics, setRawTopics] = useState([]);
+  const [topicsLoading, setTopicsLoading] = useState(false);
+  const [topicsError, setTopicsError] = useState(null);
+  // Approval submit modal state
+  const [showApprovalModal, setShowApprovalModal] = useState(false);
+  const [approvalOfficers, setApprovalOfficers] = useState([]);
+  const [approvalOfficersLoading, setApprovalOfficersLoading] = useState(false);
+  const [approvalTitle, setApprovalTitle] = useState('');
+  const [approvalStages, setApprovalStages] = useState([{ officer_id: '' }]);
+  const [approvalSubmitting, setApprovalSubmitting] = useState(false);
+  const [approvalError, setApprovalError] = useState('');
+  const [approvalSuccess, setApprovalSuccess] = useState(false);
+  const [approvalStep, setApprovalStep] = useState(1);
+  const [approvalSelectedQs, setApprovalSelectedQs] = useState(new Set());
   const abortRef = useRef(null);
   const activeConvRef = useRef(conversationId);
   const bottomRef = useRef(null);
@@ -420,7 +448,6 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
       setMessages([]);
       setInput('');
       setStructuredQuestions(null);
-      setShowExportPanel(false);
       return;
     }
     getMessages(conversationId).then(setMessages).catch(() => {});
@@ -429,14 +456,11 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
       const saved = localStorage.getItem(`exam_sq_${conversationId}`);
       if (saved) {
         setStructuredQuestions(JSON.parse(saved));
-        setShowExportPanel(false);
       } else {
         setStructuredQuestions(null);
-        setShowExportPanel(false);
       }
     } catch {
       setStructuredQuestions(null);
-      setShowExportPanel(false);
     }
   }, [conversationId]);
 
@@ -467,73 +491,28 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
 
   const removeFile = (index) => setFiles((prev) => prev.filter((_, i) => i !== index));
 
-  const handleSend = async () => {
-    if (loading) return;
-
-    const doneFiles = files.filter((f) => f.status === 'done');
-    const fileIds = doneFiles.map((f) => f.fileId);
-    const fileTitle = doneFiles.length > 0
-      ? doneFiles.map((f) => f.file.name.replace(/\.[^.]+$/, '')).join(', ')
-      : '';
-
-    // First message: include question counts + difficulty. Follow-up: send user text only.
-    const isFirstMessage = messages.length === 0;
-    const ratios = { easy: easyRatio, medium: mediumRatio, hard: hardRatio };
-    const combinedPrompt = isFirstMessage
-      ? buildPrompt(mcqCount, tfCount, fitbCount, input, ratios)
-      : (input.trim() || 'Continue the exam paper.');
-
-    let convId = conversationId;
-    if (!convId) {
-      const title = fileTitle || combinedPrompt.slice(0, 60);
-      try {
-        const conv = await createConversation('exam', title);
-        convId = conv.id;
-        activeConvRef.current = conv.id;
-        onNewConversation(convId);
-      } catch (err) {
-        setMessages((prev) => [
-          ...prev,
-          { id: Date.now().toString(), role: 'assistant', content: `⚠ Error creating conversation: ${err.message}` },
-        ]);
-        return;
-      }
-    } else if (fileTitle) {
-      renameConversation(convId, fileTitle).catch(() => {});
-    }
-
-    setInput('');
-    setFiles([]);
-    setStructuredQuestions(null);
-    setShowExportPanel(false);
-    setMessages((prev) => [
-      ...prev,
-      { id: Date.now().toString(), role: 'user', content: combinedPrompt },
-    ]);
+  // ── Core streaming executor ───────────────────────────────────────────────
+  const _executeStream = async (prompt, fileIds, convId) => {
+    const targetConvId = convId;
     setLoading(true);
     setStreamContent('');
-
     const controller = new AbortController();
     abortRef.current = controller;
-    const targetConvId = convId;
 
     try {
       let finalContent = '';
       await sendExamStream(
         convId,
-        combinedPrompt,
+        prompt,
         fileIds,
         (data) => {
           if (controller.signal.aborted) return;
           if (activeConvRef.current !== targetConvId) return;
-
           const { step, label, content, questions } = data;
-
           if (step === 'queued' || data.queued) {
             setStreamContent('\u23F3 Waiting for model to be available\u2026');
             return;
           }
-
           if (step === 'error') {
             setStreamContent('');
             setMessages((prev) => [
@@ -542,29 +521,20 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
             ]);
             return;
           }
-
           if (step === 'structured' && questions && questions.length) {
-            setStructuredQuestions(questions);
-            // Persist so it survives page reload
-            try { localStorage.setItem(`exam_sq_${targetConvId}`, JSON.stringify(questions)); } catch {}
+            const normalized = normalizeQuestions(questions);
+            if (normalized.length > 0) {
+              setStructuredQuestions(normalized);
+              try { localStorage.setItem(`exam_sq_${targetConvId}`, JSON.stringify(normalized)); } catch {}
+            }
             return;
           }
-
-          if (content) {
-            setStreamContent(content);
-            finalContent = content;
-          }
+          if (content) { setStreamContent(content); finalContent = content; }
         },
         { mcq_count: mcqCount, tf_count: tfCount, fitb_count: fitbCount },
         controller.signal,
       );
-
-      if (finalContent && !controller.signal.aborted && activeConvRef.current === targetConvId) {
-        setMessages((prev) => [
-          ...prev,
-          { id: (Date.now() + 1).toString(), role: 'assistant', content: finalContent },
-        ]);
-      } else if (controller.signal.aborted && finalContent && activeConvRef.current === targetConvId) {
+      if (finalContent && activeConvRef.current === targetConvId) {
         setMessages((prev) => [
           ...prev,
           { id: (Date.now() + 1).toString(), role: 'assistant', content: finalContent },
@@ -586,6 +556,82 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
     }
   };
 
+  // ── Open configuration modal (called on first-message Send) ───────────────
+  const handleOpenModal = () => {
+    const doneFiles = files.filter((f) => f.status === 'done');
+    if (!doneFiles.length) return;
+    setRawTopics([]);
+    setTopicsLoading(true);
+    setTopicsError(null);
+    setShowModal(true);
+
+    fetchExamTopics(doneFiles.map((f) => f.fileId))
+      .then((data) => { setRawTopics(data.topics || []); setTopicsLoading(false); })
+      .catch((err) => { setTopicsError(err.message || 'Failed to extract topics'); setTopicsLoading(false); });
+  };
+
+  // ── Modal "Generate Exam" confirm ─────────────────────────────────────────
+  const handleGenerate = async ({ topicSel }) => {
+    setShowModal(false);
+    setLastTopicSel(topicSel || []);
+    if (loading) return;
+
+    const doneFiles = files.filter((f) => f.status === 'done');
+    const fileIds = doneFiles.map((f) => f.fileId);
+    const fileTitle = doneFiles.map((f) => f.file.name.replace(/\.[^.]+$/, '')).join(', ');
+
+    const ratios = { easy: easyRatio, medium: mediumRatio, hard: hardRatio };
+    const prompt = buildPrompt(mcqCount, tfCount, fitbCount, input, ratios, topicSel, studentLevel);
+
+    let convId = conversationId;
+    if (!convId) {
+      const title = fileTitle || prompt.slice(0, 60);
+      try {
+        const conv = await createConversation('exam', title);
+        convId = conv.id;
+        activeConvRef.current = conv.id;
+        onNewConversation(convId);
+      } catch (err) {
+        setMessages((prev) => [
+          ...prev,
+          { id: Date.now().toString(), role: 'assistant', content: `⚠ Error creating conversation: ${err.message}` },
+        ]);
+        return;
+      }
+    } else if (fileTitle) {
+      renameConversation(convId, fileTitle).catch(() => {});
+    }
+
+    setInput('');
+    setFiles([]);
+    setStructuredQuestions(null);
+    setMessages((prev) => [
+      ...prev,
+      { id: Date.now().toString(), role: 'user', content: prompt },
+    ]);
+    await _executeStream(prompt, fileIds, convId);
+  };
+
+  // ── Send (routes to modal for first message, direct for follow-ups) ────────
+  const handleSend = async () => {
+    if (loading) return;
+
+    if (messages.length === 0) {
+      handleOpenModal();
+      return;
+    }
+
+    // Follow-up message
+    const prompt = input.trim() || 'Continue the exam paper.';
+    setInput('');
+    setStructuredQuestions(null);
+    setMessages((prev) => [
+      ...prev,
+      { id: Date.now().toString(), role: 'user', content: prompt },
+    ]);
+    await _executeStream(prompt, [], conversationId);
+  };
+
   const handleStop = () => {
     abortRef.current?.abort();
   };
@@ -597,52 +643,6 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
     }
   };
 
-  const exportAllPdf = () => {
-    const assistantMsgs = messages.filter((m) => m.role === 'assistant');
-    if (!assistantMsgs.length) return;
-    const win = window.open('', '_blank');
-    const headerHtml = renderExamHeader({ subjectName, instructorName, institution, examDate, totalMarks, timeAllowed });
-    const sections = assistantMsgs.map((m, i) =>
-      `<h2>Exam Paper ${i + 1}</h2><pre>${m.content.replace(/</g, '&lt;')}</pre>`
-    ).join('<hr/>');
-    win.document.write(`<!DOCTYPE html><html><head><title>Exam Papers</title>
-      <style>body{font-family:Arial,sans-serif;padding:32px;max-width:860px;margin:0 auto;line-height:1.6;}
-      h2{font-size:16px;}pre{white-space:pre-wrap;font-size:14px;}hr{border-top:1px solid #ddd;margin:24px 0;}
-      .meta{color:#888;font-size:12px;margin-bottom:24px;}@media print{body{padding:0}}</style></head><body>
-      <h1>Exam Papers Export</h1>${headerHtml}
-      ${sections}</body></html>`);
-    win.document.close();
-    win.focus();
-    setTimeout(() => { win.print(); }, 300);
-  };
-
-  const exportAllDoc = () => {
-    const assistantMsgs = messages.filter((m) => m.role === 'assistant');
-    if (!assistantMsgs.length) return;
-    const headerHtml = renderExamHeader({ subjectName, instructorName, institution, examDate, totalMarks, timeAllowed });
-    const sections = assistantMsgs.map((m, i) =>
-      `<h2>Exam Paper ${i + 1}</h2><pre>${m.content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre><hr/>`
-    ).join('');
-    const html = `<html xmlns:o='urn:schemas-microsoft-com:office:office'
-      xmlns:w='urn:schemas-microsoft-com:office:word'
-      xmlns='http://www.w3.org/TR/REC-html40'>
-      <head><meta charset='utf-8'><title>Exam Papers</title>
-      <style>body{font-family:Arial,sans-serif;padding:32px;line-height:1.6;}pre{white-space:pre-wrap;font-size:13pt;}hr{border:1px solid #ccc;margin:24px 0;}</style></head>
-      <body><h1>Exam Papers Export</h1>${headerHtml}
-      ${sections}</body></html>`;
-    const blob = new Blob(['\ufeff', html], { type: 'application/msword' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `Exam_Papers_${new Date().toISOString().slice(0, 10)}.doc`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const hasAssistantMessages = messages.some((m) => m.role === 'assistant');
-
   return (
     <div className="flex-1 flex flex-col h-full">
       {/* Header */}
@@ -653,24 +653,6 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
           </div>
           <h1 className="text-base font-semibold text-slate-800">Exam Paper Generator</h1>
         </div>
-        {hasAssistantMessages && (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={exportAllPdf}
-              title="Export all exam papers to PDF"
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-600 border border-emerald-200 rounded-lg transition"
-            >
-              <FileDown size={13} /> PDF
-            </button>
-            <button
-              onClick={exportAllDoc}
-              title="Download all exam papers as Word document"
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 rounded-lg transition"
-            >
-              <FileDown size={13} /> DOC
-            </button>
-          </div>
-        )}
       </header>
 
       {/* Messages area */}
@@ -688,28 +670,34 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
           </div>
         ))}
 
-        {/* Structured question export button — shown after questions are generated */}
+        {/* Send to Approval button — shown after questions are generated */}
         {structuredQuestions && structuredQuestions.length > 0 && (
           <div className="my-3">
             <button
-              onClick={() => setShowExportPanel((v) => !v)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition shadow-sm"
+              onClick={async () => {
+                setApprovalStep(1);
+                setApprovalSelectedQs(new Set((structuredQuestions || []).map((q) => q.number)));
+                setApprovalTitle(subjectName || 'Exam Paper');
+                setApprovalStages([{ officer_id: '' }]);
+                setApprovalError('');
+                setApprovalSuccess(false);
+                setShowApprovalModal(true);
+                setApprovalOfficersLoading(true);
+                try {
+                  const officers = await getApprovalOfficers();
+                  setApprovalOfficers(officers);
+                } catch {
+                  setApprovalOfficers([]);
+                } finally {
+                  setApprovalOfficersLoading(false);
+                }
+              }}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition shadow-sm"
             >
-              <FileDown size={15} />
-              {showExportPanel ? 'Hide Export' : 'Export Questions'}
+              <ClipboardCheck size={15} />
+              Send to Approval
             </button>
           </div>
-        )}
-
-        {/* Structured question selector — only visible after clicking Export */}
-        {structuredQuestions && structuredQuestions.length > 0 && showExportPanel && (
-          <StructuredExamView
-            key={structuredQuestions.length}
-            questions={structuredQuestions}
-            onExportPdf={(qs) => exportSelectedPdf(qs, 'Exam Paper', { subjectName, instructorName, institution, examDate, totalMarks, timeAllowed })}
-            onExportDoc={(qs) => exportSelectedDoc(qs, 'Exam Paper', { subjectName, instructorName, institution, examDate, totalMarks, timeAllowed })}
-            onExportJson={(qs) => exportSelectedJson(qs, 'Exam Paper', { subjectName, instructorName, institution, examDate, totalMarks, timeAllowed })}
-          />
         )}
 
         {loading && (
@@ -750,111 +738,11 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
 
       {/* Input area */}
       <div className="shrink-0 border-t border-slate-200 px-6 py-4 space-y-3">
-        {/* Exam Paper Header Form */}
-        <div className="rounded-xl border border-slate-200 bg-slate-50 overflow-hidden">
-          <button
-            onClick={() => setShowHeaderForm((v) => !v)}
-            className="w-full flex items-center justify-between px-4 py-2.5 text-xs font-medium text-slate-600 hover:bg-slate-100 transition"
-          >
-            <span>Exam Paper Header (optional)</span>
-            <ChevronDown size={14} className={`transition-transform ${showHeaderForm ? 'rotate-180' : ''}`} />
-          </button>
-          {showHeaderForm && (
-            <div className="grid grid-cols-2 gap-3 px-4 pb-4 pt-1">
-              {[
-                { label: 'Institution', value: institution, set: setInstitution, colSpan: true },
-                { label: 'Subject', value: subjectName, set: setSubjectName },
-                { label: 'Instructor', value: instructorName, set: setInstructorName },
-                { label: 'Date', value: examDate, set: setExamDate, type: 'date' },
-                { label: 'Total Marks', value: totalMarks, set: setTotalMarks, type: 'number' },
-                { label: 'Time Allowed', value: timeAllowed, set: setTimeAllowed, placeholder: 'e.g. 90 min' },
-              ].map(({ label, value, set, colSpan, type, placeholder }) => (
-                <div key={label} className={colSpan ? 'col-span-2' : ''}>
-                  <label className="block text-[11px] text-slate-400 mb-1">{label}</label>
-                  <input
-                    type={type || 'text'}
-                    value={value}
-                    onChange={(e) => set(e.target.value)}
-                    placeholder={placeholder || label}
-                    className="w-full bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-emerald-500 transition"
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Question-count inputs + difficulty selector */}
-        <div className="flex items-center gap-4 flex-wrap">
-          <label className="flex items-center gap-2 text-xs text-slate-500">
-            <span className="whitespace-nowrap">MCQ</span>
-            <input
-              type="number"
-              min={0}
-              max={100}
-              value={mcqCount}
-              onChange={(e) => setMcqCount(Math.max(0, Math.min(100, parseInt(e.target.value) || 0)))}
-              className="w-16 bg-white border border-slate-300 rounded-lg px-2 py-1 text-center text-sm text-slate-800 outline-none focus:border-emerald-500 transition"
-            />
-          </label>
-          <label className="flex items-center gap-2 text-xs text-slate-500">
-            <span className="whitespace-nowrap">True / False</span>
-            <input
-              type="number"
-              min={0}
-              max={100}
-              value={tfCount}
-              onChange={(e) => setTfCount(Math.max(0, Math.min(100, parseInt(e.target.value) || 0)))}
-              className="w-16 bg-white border border-slate-300 rounded-lg px-2 py-1 text-center text-sm text-slate-800 outline-none focus:border-emerald-500 transition"
-            />
-          </label>
-          <label className="flex items-center gap-2 text-xs text-slate-500">
-            <span className="whitespace-nowrap">Fill in Blanks</span>
-            <input
-              type="number"
-              min={0}
-              max={100}
-              value={fitbCount}
-              onChange={(e) => setFitbCount(Math.max(0, Math.min(100, parseInt(e.target.value) || 0)))}
-              className="w-16 bg-white border border-slate-300 rounded-lg px-2 py-1 text-center text-sm text-slate-800 outline-none focus:border-emerald-500 transition"
-            />
-          </label>
-          {/* Difficulty ratio inputs */}
-          <div className="flex items-center gap-2 ml-auto flex-wrap justify-end">
-            <div className="flex items-center gap-1.5">
-              <span className="text-[11px] text-slate-400 whitespace-nowrap">Difficulty Ratio (E/M/H %):</span>
-              {[
-                { label: 'E', val: easyRatio, set: setEasyRatio, color: 'focus:border-emerald-500' },
-                { label: 'M', val: mediumRatio, set: setMediumRatio, color: 'focus:border-amber-500' },
-                { label: 'H', val: hardRatio, set: setHardRatio, color: 'focus:border-red-500' },
-              ].map(({ label, val, set, color }) => (
-                <label key={label} className="flex items-center gap-0.5 text-[11px] text-slate-500">
-                  <span>{label}</span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={100}
-                    value={val}
-                    onChange={(e) => set(Math.max(0, Math.min(100, parseInt(e.target.value) || 0)))}
-                    className={`w-12 bg-white border border-slate-300 rounded px-1 py-0.5 text-center text-xs text-slate-800 outline-none ${color} transition`}
-                  />
-                  <span>%</span>
-                </label>
-              ))}
-              {easyRatio + mediumRatio + hardRatio !== 100 && (
-                <span className="text-[11px] text-red-400 ml-1">
-                  ≠ 100%
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-
         {/* Textarea + send */}
         <div className="flex items-end gap-2 bg-white rounded-xl px-4 py-2 border border-slate-200 focus-within:border-emerald-500 shadow-sm transition">
           <button
             onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
+            disabled={uploading || loading}
             className="p-2 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-emerald-500 disabled:opacity-40 transition"
             title="Upload PDF, DOCX, or PPTX"
           >
@@ -874,7 +762,11 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Additional instructions (optional) — e.g. focus on Chapter 3, use simple language…"
+            placeholder={
+              messages.length === 0
+                ? 'Upload a document, then click Send to configure and generate the exam…'
+                : 'Add instructions to refine the exam…'
+            }
             className="flex-1 bg-transparent resize-none outline-none text-sm text-slate-700 placeholder-slate-400 max-h-40 py-1.5"
           />
           {loading ? (
@@ -888,7 +780,12 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
           ) : (
             <button
               onClick={handleSend}
-              disabled={messages.length === 0 && mcqCount === 0 && tfCount === 0 && fitbCount === 0}
+              disabled={messages.length === 0 && !files.some((f) => f.status === 'done')}
+              title={
+                messages.length === 0 && !files.some((f) => f.status === 'done')
+                  ? 'Upload a file to enable exam generation'
+                  : messages.length === 0 ? 'Configure and generate exam' : 'Send follow-up'
+              }
               className="p-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition"
             >
               <Send size={16} className="text-white" />
@@ -896,9 +793,282 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
           )}
         </div>
         <p className="text-[11px] text-slate-400 px-1">
-          Set question counts, choose difficulty, upload source material, then click Send.
+          {messages.length === 0
+            ? 'Upload source material and click Send — a configuration panel will open to set headers, question counts, difficulty, and topics.'
+            : 'Add follow-up instructions to refine the generated exam.'}
         </p>
       </div>
+
+      {/* Exam Configuration Modal */}
+      <ExamConfigModal
+        open={showModal}
+        onClose={() => setShowModal(false)}
+        onGenerate={handleGenerate}
+        subjectName={subjectName} setSubjectName={setSubjectName}
+        instructorName={instructorName} setInstructorName={setInstructorName}
+        institution={institution} setInstitution={setInstitution}
+        courseName={courseName} setCourseName={setCourseName}
+        examDate={examDate} setExamDate={setExamDate}
+        totalMarks={totalMarks} setTotalMarks={setTotalMarks}
+        timeAllowed={timeAllowed} setTimeAllowed={setTimeAllowed}
+        studentLevel={studentLevel} setStudentLevel={setStudentLevel}
+        mcqCount={mcqCount} setMcqCount={setMcqCount}
+        tfCount={tfCount} setTfCount={setTfCount}
+        fitbCount={fitbCount} setFitbCount={setFitbCount}
+        easyRatio={easyRatio} setEasyRatio={setEasyRatio}
+        mediumRatio={mediumRatio} setMediumRatio={setMediumRatio}
+        hardRatio={hardRatio} setHardRatio={setHardRatio}
+        extraInput={input} setExtraInput={setInput}
+        rawTopics={rawTopics} topicsLoading={topicsLoading} topicsError={topicsError}
+      />
+
+      {/* ── Approval submit modal (2-step: question select → stage config) ── */}
+      {showApprovalModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh]">
+
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 shrink-0">
+              <h2 className="text-base font-semibold text-slate-800 flex items-center gap-2">
+                <ClipboardCheck size={17} className="text-blue-500" />
+                {approvalSuccess ? 'Submitted!' : approvalStep === 1 ? 'Select Questions' : 'Configure Approval'}
+              </h2>
+              <div className="flex items-center gap-3">
+                {!approvalSuccess && (
+                  <span className="text-xs text-slate-400 bg-slate-100 rounded-full px-2.5 py-0.5">
+                    Step {approvalStep} of 2
+                  </span>
+                )}
+                <button onClick={() => setShowApprovalModal(false)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500 transition">
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+
+            {/* Scrollable body */}
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+              {approvalSuccess ? (
+                <div className="flex flex-col items-center gap-3 py-8">
+                  <CheckCircle2 size={40} className="text-emerald-500" />
+                  <p className="text-slate-700 font-medium">Submitted for approval!</p>
+                  <p className="text-xs text-slate-500">Track the status in the Approvals panel.</p>
+                  <button
+                    onClick={() => setShowApprovalModal(false)}
+                    className="mt-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm transition"
+                  >
+                    Close
+                  </button>
+                </div>
+              ) : approvalStep === 1 ? (
+                /* ── Step 1: Question selection ── */
+                <div className="space-y-4">
+                  <p className="text-sm text-slate-500">
+                    Choose which questions to include in this submission.{' '}
+                    <span className="font-medium text-blue-600">{approvalSelectedQs.size} selected</span>
+                  </p>
+                  {['mcq', 'true_false', 'fill_blank'].map((type) => {
+                    const qs = (structuredQuestions || []).filter((q) => q.type === type);
+                    if (!qs.length) return null;
+                    const typeLabels = { mcq: 'Multiple Choice', true_false: 'True / False', fill_blank: 'Fill in the Blanks' };
+                    const allChecked = qs.every((q) => approvalSelectedQs.has(q.number));
+                    return (
+                      <div key={type}>
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">{typeLabels[type]}</p>
+                          <button
+                            onClick={() => {
+                              const nums = qs.map((q) => q.number);
+                              setApprovalSelectedQs((prev) => {
+                                const next = new Set(prev);
+                                if (allChecked) nums.forEach((n) => next.delete(n));
+                                else nums.forEach((n) => next.add(n));
+                                return next;
+                              });
+                            }}
+                            className="text-xs text-blue-600 hover:text-blue-800 transition"
+                          >
+                            {allChecked ? 'Deselect all' : 'Select all'}
+                          </button>
+                        </div>
+                        <div className="space-y-1.5">
+                          {qs.map((q) => (
+                            <div
+                              key={q.number}
+                              onClick={() => setApprovalSelectedQs((prev) => {
+                                const next = new Set(prev);
+                                next.has(q.number) ? next.delete(q.number) : next.add(q.number);
+                                return next;
+                              })}
+                              className={`flex gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition ${
+                                approvalSelectedQs.has(q.number)
+                                  ? 'border-blue-200 bg-blue-50'
+                                  : 'border-slate-100 bg-white hover:border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              <div className="shrink-0 mt-0.5">
+                                {approvalSelectedQs.has(q.number)
+                                  ? <CheckSquare size={14} className="text-blue-500" />
+                                  : <Square size={14} className="text-slate-300" />}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <span className="font-medium text-slate-400 mr-1 text-xs">Q{q.number}.</span>
+                                <span className="text-sm text-slate-700">{q.text}</span>
+                                {q.type === 'mcq' && q.options?.length > 0 && (
+                                  <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5">
+                                    {q.options.map((opt, i) => (
+                                      <p key={i} className="text-xs text-slate-400 truncate">{opt}</p>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                /* ── Step 2: Stage configuration ── */
+                <>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">Exam Title</label>
+                    <input
+                      type="text"
+                      value={approvalTitle}
+                      onChange={(e) => setApprovalTitle(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 placeholder-slate-400"
+                      placeholder="e.g. Mid-term Exam 2025"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-xs font-medium text-slate-600">Approval Stages (max 3)</label>
+                      {approvalStages.length < 3 && (
+                        <button
+                          onClick={() => setApprovalStages((s) => [...s, { officer_id: '' }])}
+                          className="text-xs text-blue-600 hover:text-blue-800 transition"
+                        >
+                          + Add Stage
+                        </button>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      {approvalStages.map((stage, idx) => (
+                        <div key={idx} className="flex items-center gap-2">
+                          <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 text-xs font-bold flex items-center justify-center shrink-0">
+                            {idx + 1}
+                          </div>
+                          {approvalOfficersLoading ? (
+                            <div className="flex items-center gap-2 text-xs text-slate-400">
+                              <Loader2 size={13} className="animate-spin" /> Loading officers…
+                            </div>
+                          ) : (
+                            <select
+                              value={stage.officer_id}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setApprovalStages((prev) => prev.map((s, i) => i === idx ? { ...s, officer_id: val } : s));
+                              }}
+                              className="flex-1 bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400"
+                            >
+                              <option value="">— Select Officer —</option>
+                              {approvalOfficers.map((o) => (
+                                <option key={o.id} value={o.id}>{o.username}</option>
+                              ))}
+                            </select>
+                          )}
+                          {approvalStages.length > 1 && (
+                            <button
+                              onClick={() => setApprovalStages((s) => s.filter((_, i) => i !== idx))}
+                              className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 transition"
+                            >
+                              <X size={13} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                    {approvalOfficers.length === 0 && !approvalOfficersLoading && (
+                      <p className="text-xs text-amber-600 mt-2">
+                        No approval officers found. Ask an admin to assign the &ldquo;approval&rdquo; agent to a user.
+                      </p>
+                    )}
+                  </div>
+
+                  {approvalError && (
+                    <div className="flex items-center gap-2 text-red-500 text-xs bg-red-50 rounded-lg px-3 py-2">
+                      <XCircle size={13} /> {approvalError}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Footer navigation */}
+            {!approvalSuccess && (
+              <div className="shrink-0 px-6 py-4 border-t border-slate-100 flex items-center justify-between gap-3">
+                {approvalStep === 1 ? (
+                  <>
+                    <span className="text-xs text-slate-400">
+                      {approvalSelectedQs.size} of {(structuredQuestions || []).length} questions selected
+                    </span>
+                    <button
+                      onClick={() => setApprovalStep(2)}
+                      disabled={approvalSelectedQs.size === 0}
+                      className="flex items-center gap-1.5 px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition"
+                    >
+                      Next <ChevronRight size={14} />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => { setApprovalError(''); setApprovalStep(1); }}
+                      className="flex items-center gap-1.5 px-4 py-2 text-sm text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition"
+                    >
+                      ← Back
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!approvalTitle.trim()) { setApprovalError('Please enter a title.'); return; }
+                        if (approvalStages.some((s) => !s.officer_id)) { setApprovalError('Please assign an officer to every stage.'); return; }
+                        setApprovalSubmitting(true);
+                        setApprovalError('');
+                        try {
+                          await submitExamForApproval({
+                            conversation_id: conversationId || '',
+                            title: approvalTitle.trim(),
+                            questions: (structuredQuestions || []).filter((q) => approvalSelectedQs.has(q.number)),
+                            header: {
+                              subjectName, instructorName, courseName, examDate, totalMarks, timeAllowed,
+                              studentLevel,
+                              topics: (lastTopicSel || []).filter((t) => t.checked).map((t) => ({ name: t.name, weight: t.weight })),
+                            },
+                            raw_text: '',
+                            stages: approvalStages.map((s) => ({ officer_id: s.officer_id })),
+                          });
+                          setApprovalSuccess(true);
+                        } catch (err) {
+                          setApprovalError(err.message || 'Submission failed. Please try again.');
+                        } finally {
+                          setApprovalSubmitting(false);
+                        }
+                      }}
+                      disabled={approvalSubmitting}
+                      className="flex items-center gap-2 px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition"
+                    >
+                      {approvalSubmitting ? <Loader2 size={15} className="animate-spin" /> : <ClipboardCheck size={15} />}
+                      Submit for Approval
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

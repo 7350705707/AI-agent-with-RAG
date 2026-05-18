@@ -14,6 +14,13 @@ class ChatRequest(BaseModel):
     )
 
 
+class TopicsRequest(BaseModel):
+    file_ids: list[str] = Field(
+        default_factory=list,
+        description="List of previously uploaded file IDs to extract topics from",
+    )
+
+
 class ExamRequest(BaseModel):
     conversation_id: str
     instructions: str = Field(
@@ -104,3 +111,24 @@ class UserOut(BaseModel):
     is_active: bool
     created_at: str
     updated_at: str
+
+
+# ── Exam Approval Workflow ─────────────────────────────────────────────────
+
+class ApprovalStageConfig(BaseModel):
+    officer_id: str = Field(..., min_length=1)
+
+
+class SubmitApprovalRequest(BaseModel):
+    conversation_id: str = Field(default="")
+    title: str = Field(..., min_length=1, max_length=200)
+    questions: list[dict] = Field(default_factory=list)
+    header: dict = Field(default_factory=dict)
+    raw_text: str = Field(default="", max_length=50000)
+    stages: list[ApprovalStageConfig] = Field(..., min_length=1, max_length=3)
+
+
+class ApprovalActionRequest(BaseModel):
+    action: str = Field(..., pattern="^(approve|send_back)$")
+    remark: str = Field(default="", max_length=2000)
+

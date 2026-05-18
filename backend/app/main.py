@@ -42,6 +42,7 @@ from app.routers.files import router as files_router
 from app.routers.knowledge import router as knowledge_router
 from app.routers.llm_router import router as llm_router
 from app.routers.analytics import router as analytics_router
+from app.routers.approval import router as approval_router
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -166,6 +167,7 @@ app.include_router(chat_router)
 app.include_router(exam_router)
 app.include_router(files_router)
 app.include_router(analytics_router)
+app.include_router(approval_router)
 
 
 # ── Startup ────────────────────────────────────────────────────────────────

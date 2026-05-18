@@ -13,6 +13,7 @@ import {
   Info,
   Search,
   BarChart2,
+  ClipboardCheck,
 } from 'lucide-react';
 import { listConversations, createConversation, deleteConversation } from '../api';
 import ModelSelector from './ModelSelector';
@@ -23,6 +24,7 @@ const ALL_AGENTS = [
   { id: 'knowledge', label: 'Knowledge Base', icon: BookOpen },
   { id: 'search', label: 'KB Search', icon: Search },
   { id: 'analytics', label: 'Analytics', icon: BarChart2, adminOnly: true },
+  { id: 'approval', label: 'Approvals', icon: ClipboardCheck },
 ];
 
 export default function Sidebar({
@@ -41,6 +43,7 @@ export default function Sidebar({
   const agents = ALL_AGENTS.filter((a) => {
     if (a.adminOnly) return user?.role === 'admin';
     if (a.id === 'chat') return true;
+    if (a.id === 'approval') return user?.agents?.includes('approval') || user?.agents?.includes('exam');
     return user?.agents?.includes(a.id);
   });
 

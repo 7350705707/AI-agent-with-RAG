@@ -164,6 +164,45 @@ def init_db() -> None:
     except sqlite3.OperationalError:
         pass
 
+    # Exam approval workflow tables
+    try:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS exam_submissions (
+                id              TEXT PRIMARY KEY,
+                created_by      TEXT NOT NULL,
+                conversation_id TEXT NOT NULL DEFAULT '',
+                title           TEXT NOT NULL DEFAULT 'Exam Paper',
+                questions_json  TEXT NOT NULL DEFAULT '[]',
+                header_json     TEXT NOT NULL DEFAULT '{}',
+                raw_text        TEXT NOT NULL DEFAULT '',
+                status          TEXT NOT NULL DEFAULT 'pending',
+                total_stages    INTEGER NOT NULL DEFAULT 1,
+                current_stage   INTEGER NOT NULL DEFAULT 1,
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_es_user   ON exam_submissions(created_by);
+            CREATE INDEX IF NOT EXISTS idx_es_status ON exam_submissions(status);
+
+            CREATE TABLE IF NOT EXISTS approval_stages (
+                id            TEXT PRIMARY KEY,
+                submission_id TEXT NOT NULL REFERENCES exam_submissions(id) ON DELETE CASCADE,
+                stage_number  INTEGER NOT NULL,
+                officer_id    TEXT NOT NULL,
+                officer_name  TEXT NOT NULL DEFAULT '',
+                status        TEXT NOT NULL DEFAULT 'pending',
+                remark        TEXT NOT NULL DEFAULT '',
+                actioned_at   TEXT,
+                created_at    TEXT NOT NULL,
+                UNIQUE(submission_id, stage_number)
+            );
+            CREATE INDEX IF NOT EXISTS idx_as_sub    ON approval_stages(submission_id);
+            CREATE INDEX IF NOT EXISTS idx_as_officer ON approval_stages(officer_id);
+        """)
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     # Ensure a default admin account exists
     # existing = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()
     # if not existing:
@@ -651,4 +690,203 @@ def get_user_analytics(user_id: str) -> dict:
         daily.append({"date": row["day"], "count": row["cnt"]})
     conn.close()
     return {"total_messages": total, "by_agent": by_agent, "daily_messages": daily}
+
+
+# ── Exam Approval Workflow CRUD ────────────────────────────────────────────
+
+def _row_to_submission(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
+    """Convert a raw exam_submissions row to a dict, adding parsed questions/header and stages."""
+    d = dict(row)
+    try:
+        d["questions"] = json.loads(d.pop("questions_json", "[]"))
+    except Exception:
+        d["questions"] = []
+    try:
+        d["header"] = json.loads(d.pop("header_json", "{}"))
+    except Exception:
+        d["header"] = {}
+    stages = conn.execute(
+        "SELECT * FROM approval_stages WHERE submission_id=? ORDER BY stage_number ASC",
+        (d["id"],),
+    ).fetchall()
+    d["stages"] = [dict(s) for s in stages]
+    return d
+
+
+def submit_exam_for_approval(
+    created_by: str,
+    conversation_id: str,
+    title: str,
+    questions: list,
+    header: dict,
+    raw_text: str,
+    stages: list[dict],  # [{"officer_id": str, "officer_name": str}, ...]
+) -> dict:
+    """Create an exam_submission with its approval_stages and return the full dict."""
+    conn = _connect()
+    sub_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    total_stages = len(stages)
+    conn.execute(
+        """INSERT INTO exam_submissions
+           (id, created_by, conversation_id, title, questions_json, header_json, raw_text,
+            status, total_stages, current_stage, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            sub_id, created_by, conversation_id, title,
+            json.dumps(questions), json.dumps(header), raw_text,
+            "pending", total_stages, 1, now, now,
+        ),
+    )
+    for i, stage in enumerate(stages, start=1):
+        conn.execute(
+            """INSERT INTO approval_stages
+               (id, submission_id, stage_number, officer_id, officer_name,
+                status, remark, actioned_at, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                str(uuid.uuid4()), sub_id, i,
+                stage["officer_id"], stage.get("officer_name", ""),
+                "pending", "", None, now,
+            ),
+        )
+    conn.commit()
+    result = _row_to_submission(conn, conn.execute("SELECT * FROM exam_submissions WHERE id=?", (sub_id,)).fetchone())
+    conn.close()
+    return result
+
+
+def get_submission_full(submission_id: str) -> dict | None:
+    """Return full submission dict with nested stages, or None if not found."""
+    conn = _connect()
+    row = conn.execute("SELECT * FROM exam_submissions WHERE id=?", (submission_id,)).fetchone()
+    if not row:
+        conn.close()
+        return None
+    result = _row_to_submission(conn, row)
+    conn.close()
+    return result
+
+
+def list_my_submissions(user_id: str) -> list[dict]:
+    """Return all exam submissions created by a user, newest first."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT * FROM exam_submissions WHERE created_by=? ORDER BY created_at DESC",
+        (user_id,),
+    ).fetchall()
+    result = [_row_to_submission(conn, r) for r in rows]
+    conn.close()
+    return result
+
+
+def list_pending_for_officer(officer_id: str) -> list[dict]:
+    """Return submissions where this officer is assigned to the current pending stage."""
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT es.* FROM exam_submissions es
+           JOIN approval_stages ast ON ast.submission_id = es.id
+           WHERE es.status = 'pending'
+             AND ast.officer_id = ?
+             AND ast.stage_number = es.current_stage
+             AND ast.status = 'pending'
+           ORDER BY es.created_at DESC""",
+        (officer_id,),
+    ).fetchall()
+    result = [_row_to_submission(conn, r) for r in rows]
+    conn.close()
+    return result
+
+
+def list_processed_by_officer(officer_id: str) -> list[dict]:
+    """Return submissions where this officer has already taken action (newest action first)."""
+    conn = _connect()
+    rows = conn.execute(
+        """SELECT DISTINCT es.* FROM exam_submissions es
+           JOIN approval_stages ast ON ast.submission_id = es.id
+           WHERE ast.officer_id = ?
+             AND ast.status != 'pending'
+           ORDER BY es.updated_at DESC""",
+        (officer_id,),
+    ).fetchall()
+    result = [_row_to_submission(conn, r) for r in rows]
+    conn.close()
+    return result
+
+
+def process_approval_action(
+    submission_id: str,
+    officer_id: str,
+    action: str,   # "approve" | "send_back"
+    remark: str,
+) -> dict:
+    """Officer takes action on a pending stage.  Raises ValueError on invalid state."""
+    conn = _connect()
+    now = datetime.now(timezone.utc).isoformat()
+
+    sub = conn.execute(
+        "SELECT * FROM exam_submissions WHERE id=?", (submission_id,)
+    ).fetchone()
+    if not sub:
+        conn.close()
+        raise ValueError("Submission not found")
+    sub = dict(sub)
+
+    if sub["status"] != "pending":
+        conn.close()
+        raise ValueError("Submission is not in pending state")
+
+    stage = conn.execute(
+        """SELECT * FROM approval_stages
+           WHERE submission_id=? AND stage_number=? AND officer_id=?""",
+        (submission_id, sub["current_stage"], officer_id),
+    ).fetchone()
+    if not stage:
+        conn.close()
+        raise ValueError("You are not assigned to this approval stage")
+    stage = dict(stage)
+    if stage["status"] != "pending":
+        conn.close()
+        raise ValueError("You have already acted on this stage")
+
+    # Record the stage action
+    conn.execute(
+        "UPDATE approval_stages SET status=?, remark=?, actioned_at=? WHERE id=?",
+        (action, remark, now, stage["id"]),
+    )
+
+    if action == "approve":
+        if sub["current_stage"] >= sub["total_stages"]:
+            # All stages approved — mark fully approved
+            conn.execute(
+                "UPDATE exam_submissions SET status='approved', updated_at=? WHERE id=?",
+                (now, submission_id),
+            )
+        else:
+            # Advance to next stage
+            conn.execute(
+                "UPDATE exam_submissions SET current_stage=?, updated_at=? WHERE id=?",
+                (sub["current_stage"] + 1, now, submission_id),
+            )
+    elif action == "send_back":
+        conn.execute(
+            "UPDATE exam_submissions SET status='sent_back', updated_at=? WHERE id=?",
+            (now, submission_id),
+        )
+
+    conn.commit()
+    row = conn.execute("SELECT * FROM exam_submissions WHERE id=?", (submission_id,)).fetchone()
+    result = _row_to_submission(conn, row)
+    conn.close()
+    return result
+
+
+def list_approval_officers() -> list[dict]:
+    """Return active users who have 'approval' in their agents list."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id, username FROM users WHERE is_active=1 AND agents LIKE '%\"approval\"%'",
+    ).fetchall()
+    conn.close()
+    return [{"id": r["id"], "username": r["username"]} for r in rows]
 

@@ -81,6 +81,13 @@ export const sendExamStream = async (conversationId, instructions, fileIds, onEv
   await _readSSEStream(res, onEvent, signal);
 };
 
+// ── Exam topic extraction ─────────────────────────────────────────────────
+export const fetchExamTopics = (fileIds) =>
+  request('/exam/topics', {
+    method: 'POST',
+    body: JSON.stringify({ file_ids: fileIds }),
+  });
+
 // ── File upload (conversation-scoped) ─────────────────────────────────────
 export const uploadFile = async (file, conversationId = null) => {
   const form = new FormData();

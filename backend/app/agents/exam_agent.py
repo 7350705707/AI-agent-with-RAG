@@ -62,6 +62,63 @@ def _build_history(conversation_id: str, limit: int = 2) -> list:
     return history[-(limit * 2):] if history else []
 
 
+def extract_topics_from_files(file_ids: list[str]) -> list[str]:
+    """Use the LLM to extract main topics / chapters from uploaded documents.
+
+    Returns a list of topic name strings (5-15 items) or an empty list on failure.
+    """
+    import json as _json
+    import re as _re
+
+    files = _collect_files_text(file_ids)
+    if not files:
+        return []
+
+    _MAX_DOC_CHARS = 3000
+    combined = ""
+    for f in files:
+        doc_text = f["text"][:_MAX_DOC_CHARS]
+        if len(f["text"]) > _MAX_DOC_CHARS:
+            doc_text += "\n[...document truncated...]"
+        combined += f"--- Document: {f['path'].name} ---\n{doc_text}\n\n"
+
+    base = LM_STUDIO_BASE_URL.rstrip("/")
+    payload = {
+        "model": get_active_model(),
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a document topic extractor. Analyze the document content provided "
+                    "and identify the main topics, chapters, or subject areas it covers. "
+                    "Return ONLY a valid JSON array of topic name strings — no explanation, "
+                    "no markdown fences, just the raw JSON array. "
+                    'Example: ["Introduction", "OSI Model", "TCP/IP Protocol", "Network Security"] '
+                    "Return between 5 and 15 topics."
+                ),
+            },
+            {"role": "user", "content": combined},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 400,
+        "stream": False,
+    }
+
+    try:
+        resp = httpx.post(f"{base}/chat/completions", json=payload, timeout=120)
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+        # Extract JSON array even if the model adds prose around it
+        match = _re.search(r"\[.*?\]", content, _re.DOTALL)
+        if match:
+            raw = _json.loads(match.group())
+            return [str(t).strip() for t in raw if str(t).strip()]
+        return []
+    except Exception as e:
+        log.warning("Topic extraction failed: %s", e)
+        return []
+
+
 def run_exam_generator(
     conversation_id: str, user_instructions: str, file_ids: list[str],
     mcq_count: int = 10, tf_count: int = 10, fitb_count: int = 10,
@@ -168,6 +225,14 @@ def parse_exam_to_json(text: str) -> list[dict]:
             current_q["text"] += " " + stripped
 
     _save_current()
+
+    # Post-process fill_blank questions: ensure every one contains the blank placeholder
+    for q in questions:
+        if q.get("type") == "fill_blank" and "______" not in q.get("text", ""):
+            text = q["text"].rstrip(".").rstrip()
+            q["text"] = text + " ______."
+            log.debug("Added blank placeholder to fill_blank Q%s", q.get("number"))
+
     return questions
 
 

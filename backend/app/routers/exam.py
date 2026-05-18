@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.agents.exam_agent import (
+    extract_topics_from_files,
     parse_exam_to_json,
     run_exam_generator,
     run_exam_generator_steps,
@@ -22,7 +23,7 @@ from app.auth import get_current_user
 from app.config import UPLOAD_DIR
 from app.database import add_message, register_conversation_file
 from app.llm import ensure_model_loaded, is_no_model_error
-from app.models import ExamRequest
+from app.models import ExamRequest, TopicsRequest
 from app.utils.sanitizer import sanitize_user_input
 import app.utils.state as _state
 from app.utils.state import llm_semaphore
@@ -30,6 +31,18 @@ from app.utils.state import llm_semaphore
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/exam", tags=["exam"])
+
+
+# ── Topic extraction ───────────────────────────────────────────────────────
+@router.post("/topics")
+def api_exam_topics(body: TopicsRequest, _user: dict = Depends(get_current_user)):
+    """Extract main topics from uploaded documents to pre-populate the exam config modal."""
+    try:
+        topics = extract_topics_from_files(body.file_ids)
+    except Exception as e:
+        log.warning("Topic extraction error: %s", e)
+        raise HTTPException(500, f"Topic extraction failed: {e}")
+    return {"topics": topics}
 
 
 # ── Exam (non-streaming) ───────────────────────────────────────────────────

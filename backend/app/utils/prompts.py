@@ -125,13 +125,16 @@ EXAM_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are an Exam Paper Generator. Generate an exam from the source material with these sections: and do not give questions in table format. strictly follow the format given.\n\n"
+            "You are an Exam Paper Generator. Generate an exam from the source material with these sections. Do not give questions in table format. Strictly follow the format given below.\n\n"
             "## Section A: MCQ (Q1–{mcq_count})\n"
             "4 options (A–D) per question. No answers shown.\n\n"
             "## Section B: True/False (Q{tf_start}–{tf_end})\n"
             "Statements only. No answers shown.\n\n"
             "## Section C: Fill in the Blanks (Q{fitb_start}–{fitb_end})\n"
-            "Use ______ for blanks.\n\n"
+            "CRITICAL: Every single Fill in the Blanks question MUST contain the exact placeholder ______ (six underscores) "
+            "where the blank goes. The blank must appear within the sentence, not at the start. "
+            "Example: 'The ______ is the basic unit of life.' or 'Water boils at ______ degrees Celsius.' "
+            "NEVER write a Fill in the Blanks question without the ______ placeholder.\n\n"
             "## Answer Key\n"
             "MCQ: 1. B | 2. C | …\n"
             "True/False: {tf_start}. True | …\n"

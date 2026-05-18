@@ -6,6 +6,7 @@ import AdminPanel from './views/AdminPanel';
 import KnowledgePanel from './views/KnowledgePanel';
 import SearchPanel from './views/SearchPanel';
 import AnalyticsPanel from './views/AnalyticsPanel';
+import ApprovalPanel from './views/ApprovalPanel';
 import LoginPage from './views/LoginPage';
 import AboutPage from './views/AboutPage';
 import { getStoredUser, logout as apiLogout, getToken } from './api';
@@ -81,6 +82,9 @@ export default function App() {
     }
     if (activeAgent === 'knowledge' && allowedAgents.includes('knowledge')) {
       return <KnowledgePanel />;
+    }
+    if (activeAgent === 'approval' && (allowedAgents.includes('approval') || allowedAgents.includes('exam') || user.role === 'admin')) {
+      return <ApprovalPanel user={user} />;
     }
     if (activeAgent === 'exam' && allowedAgents.includes('exam')) {
       return (

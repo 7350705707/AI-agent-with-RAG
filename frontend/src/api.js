@@ -10,4 +10,5 @@ export * from './services/knowledge.js';
 export * from './services/chat.js';
 export * from './services/models.js';
 export * from './services/analytics.js';
+export * from './services/approval.js';
 

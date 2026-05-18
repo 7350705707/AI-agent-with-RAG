@@ -1,0 +1,29 @@
+/** Exam approval workflow API calls. */
+import { request } from './base.js';
+
+/** Return users who have the 'approval' agent (eligible officers). */
+export const getApprovalOfficers = () => request('/approval/officers');
+
+/** Submit an exam paper for multi-stage approval. */
+export const submitExamForApproval = (data) =>
+  request('/approval/submit', { method: 'POST', body: JSON.stringify(data) });
+
+/** Return all submissions created by the current user. */
+export const getMySubmissions = () => request('/approval/my-submissions');
+
+/** Return submissions pending review by the current user (officer queue). */
+export const getPendingReviews = () => request('/approval/pending');
+
+/** Return submissions already reviewed by the current user (officer history). */
+export const getApprovalHistory = () => request('/approval/history');
+
+/** Return full details of a single submission. */
+export const getSubmission = (submissionId) =>
+  request(`/approval/${submissionId}`);
+
+/** Officer approves or sends back a submission. */
+export const submitApprovalAction = (submissionId, action, remark = '') =>
+  request(`/approval/${submissionId}/action`, {
+    method: 'POST',
+    body: JSON.stringify({ action, remark }),
+  });

@@ -18,6 +18,7 @@ const ALL_AGENTS = [
   { id: 'exam', label: 'Exam' },
   { id: 'knowledge', label: 'Knowledge Base' },
   { id: 'search', label: 'KB Search' },
+  { id: 'approval', label: 'Approver' },
 ];
 
 export default function AdminPanel() {
