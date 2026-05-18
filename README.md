@@ -35,6 +35,10 @@ A full-stack, fully offline AI dashboard designed for secure intranets and air-g
 - [Configuration Reference](#configuration-reference)
 - [Running the Application](#running-the-application)
 - [Knowledge Base & RAG Pipeline](#knowledge-base--rag-pipeline)
+  - [Part 1 — Document Indexing Pipeline](#part-1--document-indexing-pipeline-shared-by-both-agents)
+  - [Part 2 — Classic RAG Chat Workflow](#part-2--classic-rag-chat-workflow-chat_agentpy)
+  - [Part 3 — Agentic RAG Chat Workflow](#part-3--agentic-rag-chat-workflow-agentic_ragpy)
+  - [Summary Comparison](#summary-comparison)
 - [Authentication & Roles](#authentication--roles)
 - [Logging](#logging)
 - [Docker](#docker)
@@ -806,13 +810,259 @@ nssm start SarvamAI
 
 ## Knowledge Base & RAG Pipeline
 
-1. **Upload** — A PDF / DOCX / PPTX file is sent to `POST /api/knowledge/upload` (max 200 MB).
-2. **Parse** — `document_loader.py` extracts text using the appropriate library (PyPDF / Docx2txt / python-pptx).
-3. **Chunk** — Text is split into 1 000-character chunks with 200-character overlap using LangChain's `RecursiveCharacterTextSplitter`.
-4. **Embed** — Each chunk is embedded via LM Studio's `/v1/embeddings` in batches of 32.
-5. **Index** — Embeddings and metadata are upserted into ChromaDB under the document's unique ID.
-6. **Search** — At query time the user query is embedded; ChromaDB performs cosine similarity search. Results are optionally re-ranked with BM25 keyword scoring. Up to 4 000 characters of combined context is injected into the LLM prompt.
-7. **Cite** — The agent returns source filenames alongside the answer so users know which documents informed the response.
+RAG stands for **Retrieval-Augmented Generation**. In plain terms: instead of relying only on what the AI model already knows (which may be outdated or incorrect), the system first *searches* your uploaded documents for relevant facts, then *gives those facts to the AI* so it can answer accurately and cite its sources.
+
+There are two separate RAG workflows in this application — one for the **Classic Chat** agent and one for the **Agentic Chat** agent. Both share the same document indexing pipeline but differ in how they decide *when* and *what* to search.
+
+---
+
+### Part 1 — Document Indexing Pipeline (shared by both agents)
+
+This pipeline runs **once when you upload a document** and stores the result in ChromaDB so it can be searched instantly later.
+
+```
+PDF / DOCX / PPTX
+      │
+      ▼
+  [1] PARSE          Extract raw text with PyPDF / Docx2txt / python-pptx
+      │
+      ▼
+  [2] CHUNK          Split into 1 000-char pieces, 200-char overlap
+      │
+      ▼
+  [3] EMBED          LM Studio /v1/embeddings converts text → float vector
+      │
+      ▼
+  [4] INDEX          ChromaDB stores (vector + text + metadata) on disk
+```
+
+#### Step 1 — Parse
+
+**Simple:** The system reads your file and converts it into raw text, like copying all the words out of a PDF.
+
+**Technical:** `utils/document_loader.py` dispatches to the appropriate library based on the file extension:
+- `.pdf` → `PyPDF` (page-by-page text extraction)
+- `.docx` → `Docx2txt` (paragraph-level extraction preserving structure)
+- `.pptx` → `python-pptx` + `unstructured` (slide text + notes)
+
+The first line of each extracted block is examined as a potential `heading_hint` — if it looks like a heading (short, title-cased, no sentence punctuation) it is stored as metadata to help the LLM understand document structure.
+
+#### Step 2 — Chunk
+
+**Simple:** Long documents are cut into small, overlapping pieces so the AI can read and compare each piece individually. The overlap means no idea gets accidentally cut in half at a boundary.
+
+**Technical:** LangChain's `RecursiveCharacterTextSplitter` splits on `\n\n`, `\n`, and space in that priority order. Each chunk is **1 000 characters** with a **200-character overlap**. Each chunk carries rich metadata:
+
+| Metadata field | Value |
+|---|---|
+| `filename` | Original file name |
+| `doc_id` | UUID assigned at upload |
+| `chunk_index` | Position of this chunk in the document |
+| `total_chunks` | Total number of chunks |
+| `doc_type` | `pdf`, `docx`, or `pptx` |
+| `heading_hint` | First line if it resembles a heading |
+| `position` | `beginning`, `middle`, or `end` |
+
+#### Step 3 — Embed
+
+**Simple:** Each piece of text is converted into a long list of numbers (a "vector") that captures the *meaning* of the text. Two pieces that talk about the same topic will produce similar lists of numbers, even if they use different words.
+
+**Technical:** `chroma_store.py` calls LM Studio's `/v1/embeddings` endpoint (OpenAI-compatible) in batches of 32 chunks, with a 120-second timeout per batch. The same model that handles chat also handles embeddings, so the vector space is consistent. If LM Studio is unreachable and `EMBEDDING_MODE=auto`, it falls back to ChromaDB's built-in ONNX `all-MiniLM-L6-v2` model.
+
+> **Important:** Always use the same embedding model for indexing and searching. Mixing models produces incompatible vectors and degraded search quality. Re-index all documents after switching models.
+
+#### Step 4 — Index
+
+**Simple:** All the number-lists (vectors) are saved to a database on disk, tagged with which document and which piece of the document they came from. From this point the document is "in the knowledge base" and can be searched instantly.
+
+**Technical:** ChromaDB upserts each chunk as a record containing the embedding vector, the raw text content, and the metadata dict. Upsert semantics mean the same chunk can be re-indexed without duplication — existing records are overwritten by document ID + chunk index. The SQLite-backed ChromaDB store persists to `backend/chroma_db/`.
+
+---
+
+### Part 2 — Classic RAG Chat Workflow (`chat_agent.py`)
+
+This is the **General Chat** panel (also the Classic Chat panel). The agent runs a deterministic 6-stage pipeline for every user message.
+
+```
+User message
+      │
+      ▼
+  [1] QUERY ANALYSIS        Substantive? Follow-up? Identity/history question?
+      │
+      ▼
+  [2] USER MEMORY RECALL    Load personal facts (name, role, location, …)
+      │
+      ▼
+  [3] HISTORY RETRIEVAL     Recent turns + cross-conversation Jaccard search
+      │
+      ▼
+  [4] KNOWLEDGE BASE SEARCH Hybrid vector + BM25 search → relevance filter
+      │
+      ▼
+  [5] LLM GENERATION        Prompt = system + memory + history + KB context + query
+      │
+      ▼
+  [6] BACKGROUND TASKS      Memory extraction in a daemon thread
+      │
+      ▼
+  Streamed answer + source citations
+```
+
+#### Stage 1 — Query Analysis
+
+**Simple:** Before searching anything, the system asks: "Is this a real question, a vague follow-up ('tell me more'), or a question about the user's own past ('what did I say before')?" The answer changes what gets searched.
+
+**Technical:** Two classifiers run on the raw user text:
+
+- **`_is_substantive_query(query)`** — tokenizes the query with the same stop-word list used by BM25, then additionally removes follow-up meta-words (`give`, `explain`, `details`, `tell`, `more`, `please`, etc.). If **≥ 2 genuine topic tokens** survive, the query is substantive and cross-conversation search is enabled. Vague inputs like *"give me in details"* → 0 topic tokens → only recent turns are used.
+
+- **`_is_history_meta_query(query)`** — regex matches identity/recall phrases: *"what is my name"*, *"what did we discuss"*, *"previous task"*, *"remind me"*, etc. When matched, the most recent exchanges across ALL the user's conversations are loaded (not just the current one), so the AI can answer continuity questions across sessions.
+
+- **`_build_rag_search_query()`** — builds the actual ChromaDB query. For vague follow-ups it substitutes the last substantive user question. For KB-grounded conversations (where a recent AI reply included document sources) it combines the current query with the previous substantive question to widen recall.
+
+#### Stage 2 — User Memory Recall
+
+**Simple:** The system checks if it has stored any personal facts about you from previous conversations (your name, job, location, etc.) and includes them in the prompt so the AI can personalise its response.
+
+**Technical:** `utils/user_memory.py` reads the `user_memories` SQLite table for the current user, returning key/value pairs extracted in past sessions. `format_user_facts()` serialises them into a compact natural-language string that is injected into the system prompt. Example: *"You know the following about this user: name=Alex, role=Army Officer, location=Shillong."*
+
+#### Stage 3 — History Retrieval
+
+**Simple:** The AI reads the recent back-and-forth of the conversation so it knows what has been said already. For specific topics it also digs into older conversations to find relevant past discussions.
+
+**Technical:** `_build_history()` applies a two-tier retrieval strategy:
+
+| Query type | Strategy |
+|---|---|
+| **History/identity** | Last 4 turns of current conversation **+** 5 most recent turns across ALL the user's conversations |
+| **Substantive** | Last 4 turns of current conversation **+** Jaccard similarity search across past conversations (top-K matches) |
+| **Vague follow-up** | Last 4 turns of current conversation only |
+
+**Jaccard search** (`search_history_for_user`) tokenizes both the query and each stored exchange using the BM25 stop-word list, computes token set intersection / union, and ranks by overlap score. This is purely in-memory (no vector DB call) and runs in milliseconds. Each injected history message is capped at 800 characters to conserve context window space.
+
+#### Stage 4 — Knowledge Base Search
+
+**Simple:** The system converts your question into a vector, searches the document database for the most similar pieces of text, filters out anything that doesn't match well enough, and puts the best results into the AI's prompt.
+
+**Technical:** `_get_rag_context()` runs a multi-step retrieval process:
+
+1. **Chunk count check** — if the knowledge base is empty, search is skipped entirely.
+2. **Vector search** — `search_knowledge(query, limit=6)` embeds the enriched query and calls ChromaDB's cosine-similarity search, returning the top-6 chunks with their scores.
+3. **Spell-correction retry** — if the initial search returns zero results and the original query is available, `_normalize_query()` asks the LLM to fix typos (e.g. *"assam rifiles act"* → *"assam rifles act"*) and retries once.
+4. **Relevance threshold filter** — chunks with cosine similarity score **< 0.50** are discarded. This prevents weakly-related document content from polluting the answer (e.g. "Operation Sindoor" chunks appearing for a "Kargil War" query just because both mention India and military operations).
+5. **Context assembly** — surviving chunks are assembled into a single context string (max 2 000 characters) with source attribution: `[Source: filename.pdf, middle of document]\nSection: heading\ncontent…`
+
+If the search produces results, `GENERAL_CHAT_RAG_PROMPT` is used (instructs the LLM to answer from documents and cite sources). If no results, `GENERAL_CHAT_PROMPT` is used (instructs the LLM to answer from general knowledge and explicitly say so).
+
+#### Stage 5 — LLM Generation (Streaming)
+
+**Simple:** All the gathered information — personal facts, conversation history, document excerpts, and the user's question — is assembled into one big prompt and sent to the AI. The AI's response is streamed back word-by-word so you see it appearing in real time.
+
+**Technical:** The final messages list is:
+
+```
+[SystemMessage(prompt + user_facts)]
+[HumanMessage(history[0])]
+[AIMessage(history[1])]
+...
+[HumanMessage(user_query + kb_context)]
+```
+
+LangChain's `astream()` is called on the `ChatOpenAI` instance pointed at `http://localhost:1234/v1`. Each streamed `AIMessageChunk` is yielded as an SSE `token` event to the frontend. After all tokens are emitted, a `sources` event carries the list of cited filenames and document IDs.
+
+#### Stage 6 — Background Memory Extraction
+
+**Simple:** After answering, the system quietly checks if the conversation contained any new personal facts about you (like you mentioned your name or job) and saves them for future conversations — without slowing down the response.
+
+**Technical:** A background daemon thread calls `extract_and_save_user_facts(user_id, conversation_text)` from `utils/user_memory.py`. This first runs a regex pass (fast path) for obvious patterns like *"my name is …"*, *"I am a …"*, *"I work at …"*. If the regex finds nothing, a lightweight LLM call extracts structured facts from the conversation. Results are stored as key/value rows in the `user_memories` SQLite table and recalled in Stage 2 of the next request.
+
+---
+
+### Part 3 — Agentic RAG Chat Workflow (`agentic_rag.py`)
+
+The **Agentic Chat** panel uses a fundamentally different approach: instead of the system deciding when to search, the **LLM itself decides** — and it may search multiple times, with different queries, before producing a final answer.
+
+```
+User message
+      │
+      ▼
+  Build messages: [system + memory + history + user_query]
+      │
+      ▼
+  ┌───────────────────────────────────────────┐
+  │           REACT LOOP (max 3 iterations)   │
+  │                                           │
+  │   LLM responds with tool_calls?           │
+  │        YES → execute tools                │
+  │              append ToolMessage results   │
+  │              emit ("thinking", …) to UI   │
+  │              loop again                   │
+  │        NO  → plain text answer            │
+  │              stream tokens to UI          │
+  └───────────────────────────────────────────┘
+      │
+      ▼
+  Streamed answer + source citations
+```
+
+#### Tool: `search_knowledge_base`
+
+**Simple:** The AI searches your uploaded documents for relevant content. It can call this multiple times with different search phrases to get a comprehensive answer.
+
+**Technical:** The tool implementation in `_tool_search_knowledge_base()`:
+1. **Auto-expands** the query by calling `_tool_expand_search_keywords()` first — this uses the LLM (or MCP server) to generate synonyms and related domain terms (e.g. *"assam rifles"* → *"paramilitary, northeast India, border security, AFSPA"*).
+2. Combines the original query + expanded keywords into one broader combined query.
+3. Calls `search_knowledge(combined_query, limit)` in ChromaDB.
+4. Falls back to the original query if the expanded search returns nothing.
+5. Returns formatted results: `[filename, position]\nSection: heading\ncontent…` separated by `---`.
+
+Maximum context returned per tool call: **3 000 characters**.
+
+#### Tool: `expand_search_keywords`
+
+**Simple:** Generates related words and synonyms for the search term. This helps find relevant documents even when they use different wording than the user's question.
+
+**Technical:** Calls the MCP server's `expand_keywords` tool at `/mcp`. The MCP server uses the active LLM to produce a comma-separated list of synonyms and related domain terms. These are automatically prepended to every `search_knowledge_base` call.
+
+#### Tool: `search_conversation_history`
+
+**Simple:** Searches the user's past conversations for relevant discussions. Useful when the user asks "what did we cover last time about X?"
+
+**Technical:** Calls `search_history_for_user()` with Jaccard tokenisation to find the most topically similar past exchanges. Results are injected as `ToolMessage` content so the LLM can reference past discussions in its answer.
+
+#### Tool: `save_memory`
+
+**Simple:** When the user mentions something personal (their name, job, location, a goal), the AI can save it permanently so it remembers in future conversations.
+
+**Technical:** Directly calls `save_user_fact(user_id, key, value, category)` from `utils/user_memory.py`. Categories: `personal`, `preference`, `goal`, `note`, `task`.
+
+#### Force-search overrides
+
+**Simple:** Even if the LLM would naturally just answer from its training data, the system can force it to search the knowledge base first when it detects follow-up patterns or explicit search requests.
+
+**Technical:** Before the ReAct loop starts, two regex checks modify the system prompt:
+
+- **`_FOLLOWUP_DETAIL_PATTERNS`** — matches phrases like *"tell me more"*, *"give me more details"*, *"elaborate on this"*. When matched, the system prompt instructs the LLM to call `search_knowledge_base` before answering.
+- **`_EXPLICIT_SEARCH_PATTERNS`** — matches explicit search commands like *"search in the database"*, *"find from the document"*, *"based on the uploaded file"*. When matched, same override applies.
+
+#### Thinking events
+
+During tool calls the backend emits `("thinking", "Searching knowledge base for: <query>…")` SSE events. The frontend `GeneralChatPanel.jsx` displays these as a live animated thinking indicator, giving the user visibility into what the agent is doing while they wait for the final answer.
+
+---
+
+### Summary Comparison
+
+| Aspect | Classic RAG Chat | Agentic RAG Chat |
+|---|---|---|
+| **Who decides to search** | Always (pipeline stage 4) | The LLM (tool calling) |
+| **Number of searches** | One per message | Up to 3 per message |
+| **Query expansion** | Manual query enrichment | Automatic via `expand_keywords` tool |
+| **Spell correction** | Yes — LLM retry on empty result | Included in auto-expansion |
+| **Thinking indicator** | No | Yes — live tool-call progress |
+| **Memory saving** | Background thread (post-response) | In-loop tool call (`save_memory`) |
+| **Latency** | Lower (deterministic pipeline) | Higher (iterative LLM calls) |
+| **Best for** | Fast factual Q&A, follow-ups | Complex multi-step research |
 
 Documents can be re-indexed at any time (e.g. after switching embedding models) via `POST /api/knowledge/documents/{id}/index`.
 

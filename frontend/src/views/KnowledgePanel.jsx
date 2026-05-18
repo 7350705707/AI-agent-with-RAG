@@ -1,4 +1,7 @@
 ﻿import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
 import {
   BookOpen,
   Upload,
@@ -435,8 +438,10 @@ export default function KnowledgePanel() {
                 <X size={18} />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto px-5 py-4 text-sm text-slate-700 whitespace-pre-wrap leading-relaxed">
-              {summaryModal.summary}
+            <div className="flex-1 overflow-y-auto px-5 py-4 text-sm text-slate-700 leading-relaxed">
+              <div className="prose prose-sm max-w-none prose-p:my-1 prose-li:my-0.5 prose-headings:mt-3 prose-headings:mb-1 prose-ol:my-1 prose-ul:my-1 prose-slate">
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{summaryModal.summary}</ReactMarkdown>
+              </div>
             </div>
           </div>
         </div>

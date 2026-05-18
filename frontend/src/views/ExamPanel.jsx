@@ -106,20 +106,57 @@ function renderQuestionsToHtml(questions, includeAnswerKey = true) {
   return html;
 }
 
+// -- Shuffle helpers ----------------------------------------------------------
+
+function shuffleArray(arr) {
+  const result = [...arr];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
+function shuffleWithinTypes(questions) {
+  const sections = { mcq: [], true_false: [], fill_blank: [] };
+  questions.forEach((q) => { if (sections[q.type]) sections[q.type].push(q); });
+  return [
+    ...shuffleArray(sections.mcq),
+    ...shuffleArray(sections.true_false),
+    ...shuffleArray(sections.fill_blank),
+  ];
+}
+
+const SET_LABELS = ['A', 'B', 'C', 'D'];
+
+// -- Export functions (4 shuffled sets) ---------------------------------------
+
 function exportSelectedPdf(questions, title, header = {}) {
-  const win = window.open('', '_blank');
   const headerHtml = renderExamHeader(header);
-  const bodyHtml = renderQuestionsToHtml(questions, false);
-  win.document.write(`<!DOCTYPE html><html><head><title>${title}</title>
+  const sets = SET_LABELS.map((label) => ({
+    label,
+    questions: shuffleWithinTypes(questions),
+  }));
+
+  const win = window.open('', '_blank');
+  const allSetsHtml = sets.map(({ label, questions: qs }, idx) => {
+    const bodyHtml = renderQuestionsToHtml(qs, false);
+    return `<div class="${idx > 0 ? 'page-break' : ''}">
+      <h1>${escapeHtml(title)} &mdash; Set ${label}</h1>
+      ${headerHtml}
+      ${bodyHtml}
+    </div>`;
+  }).join('');
+
+  win.document.write(`<!DOCTYPE html><html><head><title>${escapeHtml(title)}</title>
     <style>
       body{font-family:Arial,sans-serif;padding:32px;color:#111;max-width:860px;margin:0 auto;line-height:1.6;}
       h1{font-size:18px;margin-bottom:4px;}h2{font-size:15px;}
       .meta{color:#888;font-size:12px;margin-bottom:24px;}
-      @media print{body{padding:0}}
+      .page-break{page-break-before:always;padding-top:32px;}
+      @media print{body{padding:0}.page-break{page-break-before:always;}}
     </style></head><body>
-    <h1>${title}</h1>
-    ${headerHtml}
-    ${bodyHtml}
+    ${allSetsHtml}
     </body></html>`);
   win.document.close();
   win.focus();
@@ -127,57 +164,70 @@ function exportSelectedPdf(questions, title, header = {}) {
 }
 
 function exportSelectedJson(questions, title, header = {}) {
-  const sections = { mcq: [], true_false: [], fill_blank: [] };
-  questions.forEach((q) => { if (sections[q.type]) sections[q.type].push(q); });
-  const data = {
-    title,
-    header,
-    exported_at: new Date().toISOString(),
-    sections: Object.fromEntries(
-      Object.entries(sections).map(([type, qs]) => [
-        type,
-        qs.map((q, i) => ({
-          number: i + 1,
-          original_number: q.number,
-          text: q.text,
-          ...(q.options && q.options.length ? { options: q.options } : {}),
-          ...(q.answer ? { answer: q.answer } : {}),
-        })),
-      ])
-    ),
-  };
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${title.replace(/\s+/g, '_')}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  const baseFilename = title.replace(/\s+/g, '_');
+  SET_LABELS.forEach((label, idx) => {
+    const shuffled = shuffleWithinTypes(questions);
+    const sections = { mcq: [], true_false: [], fill_blank: [] };
+    shuffled.forEach((q) => { if (sections[q.type]) sections[q.type].push(q); });
+    const data = {
+      title: `${title} - Set ${label}`,
+      set: label,
+      header,
+      exported_at: new Date().toISOString(),
+      sections: Object.fromEntries(
+        Object.entries(sections).map(([type, qs]) => [
+          type,
+          qs.map((q, i) => ({
+            number: i + 1,
+            original_number: q.number,
+            text: q.text,
+            ...(q.options && q.options.length ? { options: q.options } : {}),
+            ...(q.answer ? { answer: q.answer } : {}),
+          })),
+        ])
+      ),
+    };
+    setTimeout(() => {
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${baseFilename}_Set_${label}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, idx * 400);
+  });
 }
 
 function exportSelectedDoc(questions, title, header = {}) {
   const headerHtml = renderExamHeader(header);
-  const bodyHtml = renderQuestionsToHtml(questions);
-  const html = `<html xmlns:o='urn:schemas-microsoft-com:office:office'
-    xmlns:w='urn:schemas-microsoft-com:office:word'
-    xmlns='http://www.w3.org/TR/REC-html40'>
-    <head><meta charset='utf-8'><title>${title}</title>
-    <style>body{font-family:Arial,sans-serif;padding:32px;line-height:1.6;}</style></head>
-    <body><h1>${title}</h1>
-    ${headerHtml}
-    ${bodyHtml}
-    </body></html>`;
-  const blob = new Blob(['\ufeff', html], { type: 'application/msword' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${title}.doc`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  SET_LABELS.forEach((label, idx) => {
+    const shuffled = shuffleWithinTypes(questions);
+    const bodyHtml = renderQuestionsToHtml(shuffled);
+    const setTitle = `${title} - Set ${label}`;
+    const html = `<html xmlns:o='urn:schemas-microsoft-com:office:office'
+      xmlns:w='urn:schemas-microsoft-com:office:word'
+      xmlns='http://www.w3.org/TR/REC-html40'>
+      <head><meta charset='utf-8'><title>${escapeHtml(setTitle)}</title>
+      <style>body{font-family:Arial,sans-serif;padding:32px;line-height:1.6;}</style></head>
+      <body><h1>${escapeHtml(setTitle)}</h1>
+      ${headerHtml}
+      ${bodyHtml}
+      </body></html>`;
+    setTimeout(() => {
+      const blob = new Blob(['\ufeff', html], { type: 'application/msword' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${title.replace(/\s+/g, '_')}_Set_${label}.doc`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, idx * 400);
+  });
 }
 
 // -- Structured Questions Panel -----------------------------------------------
@@ -256,23 +306,26 @@ function StructuredExamView({ questions, onExportPdf, onExportDoc, onExportJson 
           <button
             onClick={() => onExportPdf(selectedQuestions)}
             disabled={!selected.size}
+            title="Export 4 shuffled sets as PDF (Set A, B, C, D)"
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-600 border border-emerald-200 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            <FileDown size={12} /> PDF
+            <FileDown size={12} /> PDF ×4
           </button>
           <button
             onClick={() => onExportDoc(selectedQuestions)}
             disabled={!selected.size}
+            title="Download 4 shuffled sets as DOC files (Set A, B, C, D)"
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            <FileDown size={12} /> DOC
+            <FileDown size={12} /> DOC ×4
           </button>
           <button
             onClick={() => onExportJson(selectedQuestions)}
             disabled={!selected.size}
+            title="Download 4 shuffled sets as JSON files (Set A, B, C, D)"
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-violet-50 hover:bg-violet-100 text-violet-600 border border-violet-200 rounded-lg transition disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            <FileDown size={12} /> JSON
+            <FileDown size={12} /> JSON ×4
           </button>
         </div>
       </div>
@@ -332,7 +385,7 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
   // Exam paper header fields
   const [subjectName, setSubjectName] = useState('');
   const [instructorName, setInstructorName] = useState('');
-  
+  const [institution, setInstitution] = useState('');
   const [examDate, setExamDate] = useState(new Date().toISOString().slice(0, 10));
   const [totalMarks, setTotalMarks] = useState('');
   const [timeAllowed, setTimeAllowed] = useState('');
@@ -709,6 +762,7 @@ export default function ExamPanel({ conversationId, onNewConversation }) {
           {showHeaderForm && (
             <div className="grid grid-cols-2 gap-3 px-4 pb-4 pt-1">
               {[
+                { label: 'Institution', value: institution, set: setInstitution, colSpan: true },
                 { label: 'Subject', value: subjectName, set: setSubjectName },
                 { label: 'Instructor', value: instructorName, set: setInstructorName },
                 { label: 'Date', value: examDate, set: setExamDate, type: 'date' },

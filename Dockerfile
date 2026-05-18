@@ -1,21 +1,21 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 1 — Build React frontend
-# ─────────────────────────────────────────────────────────────────────────────
-FROM node:20-alpine AS frontend-builder
-WORKDIR /frontend
+# # ─────────────────────────────────────────────────────────────────────────────
+# # Stage 1 — Build React frontend
+# # ─────────────────────────────────────────────────────────────────────────────
+# FROM node:20-alpine AS frontend-builder
+# WORKDIR /frontend
 
-# Install dependencies first (better layer caching)
-COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --prefer-offline
+# # Install dependencies first (better layer caching)
+# COPY frontend/package.json frontend/package-lock.json ./
+# RUN npm ci --prefer-offline
 
-# Copy source and build
-COPY frontend/ ./
-RUN npm run build
+# # Copy source and build
+# COPY frontend/ ./
+# RUN npm run build
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 2 — Python backend (serves API + static frontend)
-# ─────────────────────────────────────────────────────────────────────────────
+# # ─────────────────────────────────────────────────────────────────────────────
+# # Stage 2 — Python backend (serves API + static frontend)
+# # ─────────────────────────────────────────────────────────────────────────────
 FROM python:3.12-slim AS backend
 
 WORKDIR /app
@@ -36,24 +36,25 @@ COPY backend/requirements.txt ./requirements.txt
 RUN pip install --upgrade pip \
  && pip install --no-cache-dir -r requirements.txt
 
-# ── Pre-download the ChromaDB default ONNX embedding model ─────────────────
-# ChromaDB's fallback embedding function (all-MiniLM-L6-v2 via ONNX) normally
-# downloads ~25 MB on first use. On an offline PC that download fails and RAG
-# returns no results. Baking it into the image here means it is always available.
-RUN python -c "\
-from chromadb.utils.embedding_functions import DefaultEmbeddingFunction; \
-print('Downloading ONNX embedding model...'); \
-ef = DefaultEmbeddingFunction(); \
-ef(['warmup']); \
-print('ONNX embedding model cached successfully.') \
-"
+# # ── Pre-download the ChromaDB default ONNX embedding model ─────────────────
+# # ChromaDB's fallback embedding function (all-MiniLM-L6-v2 via ONNX) normally
+# # downloads ~25 MB on first use. On an offline PC that download fails and RAG
+# # returns no results. Baking it into the image here means it is always available.
+# RUN python -c "\
+# from chromadb.utils.embedding_functions import DefaultEmbeddingFunction; \
+# print('Downloading ONNX embedding model...'); \
+# ef = DefaultEmbeddingFunction(); \
+# ef(['warmup']); \
+# print('ONNX embedding model cached successfully.') \
+# "
 
 # Copy backend application code
 COPY backend/ ./
 
 # Copy built React app to the path FastAPI expects:
 #   BASE_DIR = /app  →  BASE_DIR.parent = /  →  /frontend/build
-COPY --from=frontend-builder /frontend/build /frontend/build
+# COPY --from=frontend-builder /frontend/build /frontend/build
+COPY  frontend/build /frontend/build
 
 # Persistent data directories (override with bind-mounts or named volumes)
 VOLUME ["/app/uploads", "/app/chroma_db", "/app/knowledge_files"]

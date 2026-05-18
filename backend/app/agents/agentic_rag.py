@@ -59,7 +59,7 @@ _EXPLICIT_SEARCH_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
 from app.chroma_store import get_knowledge_chunk_count, search_knowledge
@@ -690,22 +690,71 @@ def run_agentic_chat_stream(
 
     for attempt in range(2):
         try:
-            llm_with_tools = _raw_llm(temperature=0.5, streaming=False).bind_tools(AGENT_TOOLS)
+            llm_with_tools = _raw_llm(temperature=0.5, streaming=True).bind_tools(AGENT_TOOLS)
 
-            # ── Phase 1: Tool-calling loop (non-streaming) ─────────────────
+            # ── Phase 1: Streaming tool-calling loop ───────────────────────
+            # Each iteration streams Phase 1.  When the LLM produces TEXT tokens
+            # (no tool calls), we yield them immediately as the final answer and
+            # return — only ONE LM Studio request for that turn.
+            # When the LLM produces TOOL CALLS, we accumulate the stream chunks
+            # into a complete AIMessage, execute the tools, then repeat.
+            # After all tool iterations, Phase 2 streams the grounded final answer
+            # (the traditional 2-request path, used only when tools were invoked).
             for iteration in range(max_iterations):
                 if stop_event and stop_event.is_set():
                     return
 
-                response: AIMessage = llm_with_tools.invoke(messages)
-                tool_calls = getattr(response, "tool_calls", None) or []
+                phase1_chunks: list[AIMessageChunk] = []
+                streaming_as_answer = False  # True once we confirm LLM is writing text
 
-                if not tool_calls:
-                    # LLM is ready to answer — break so Phase 2 streams it properly
+                lm_phase1 = llm_with_tools.stream(messages)
+                try:
+                    for chunk in lm_phase1:
+                        if stop_event and stop_event.is_set():
+                            break
+
+                        phase1_chunks.append(chunk)
+
+                        # Detect response type on the first meaningful chunk.
+                        # tool_call_chunks == [] means no tool activity in this chunk.
+                        if not streaming_as_answer:
+                            has_tool_chunk = bool(getattr(chunk, "tool_call_chunks", None))
+                            if not has_tool_chunk and chunk.content:
+                                streaming_as_answer = True
+
+                        # Stream Phase 1 tokens directly when LLM chose to answer
+                        if streaming_as_answer and chunk.content:
+                            yield ("token", chunk.content, all_sources)
+                finally:
+                    if hasattr(lm_phase1, "close"):
+                        try:
+                            lm_phase1.close()
+                        except Exception:
+                            pass
+
+                if stop_event and stop_event.is_set():
+                    return
+
+                # LLM answered without tools — single request, we're done
+                if streaming_as_answer:
+                    return
+
+                # Accumulate stream chunks into one AIMessage to inspect tool calls
+                if not phase1_chunks:
                     break
 
-                # Only append to messages when there are actual tool calls
-                messages.append(response)
+                accumulated: AIMessageChunk = phase1_chunks[0]
+                for c in phase1_chunks[1:]:
+                    accumulated = accumulated + c  # LangChain merges tool_call_chunks → tool_calls
+
+                tool_calls = getattr(accumulated, "tool_calls", None) or []
+
+                if not tool_calls:
+                    # LLM produced neither text nor tool calls — fall through to Phase 2
+                    break
+
+                # Append the accumulated message so ToolMessage results can reference it
+                messages.append(accumulated)
 
                 # Execute each requested tool call
                 for tc in tool_calls:
@@ -765,19 +814,29 @@ def run_agentic_chat_stream(
                         )
                     )
 
-            # ── Phase 2: Always stream the final answer ────────────────────
-            # messages = [system, history..., human] + optional [AIMessage(tools), ToolMessages...]
-            # The streaming LLM generates a fresh, properly streamed response from this context.
+            # ── Phase 2: Stream final answer after tool execution ──────────
+            # Reached only when tools were called (or LLM produced no output).
+            # messages now contains full context: system + history + human +
+            # AIMessage(tool_calls) + ToolMessage(results) for each iteration.
             if stop_event and stop_event.is_set():
                 return
 
             stream_llm = _raw_llm(temperature=0.5, streaming=True)
-            for chunk in stream_llm.stream(messages):
-                if stop_event and stop_event.is_set():
-                    return
-                token = chunk.content if hasattr(chunk, "content") else ""
-                if token:
-                    yield ("token", token, all_sources)
+            lm_stream = stream_llm.stream(messages)
+            try:
+                for chunk in lm_stream:
+                    if stop_event and stop_event.is_set():
+                        break
+                    token = chunk.content if hasattr(chunk, "content") else ""
+                    if token:
+                        yield ("token", token, all_sources)
+            finally:
+                # Explicitly close the httpx connection so LM Studio stops generating
+                if hasattr(lm_stream, "close"):
+                    try:
+                        lm_stream.close()
+                    except Exception:
+                        pass
             return
 
         except Exception as exc:

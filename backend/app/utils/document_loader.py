@@ -17,7 +17,7 @@ def _load_pptx(file_path: str) -> list[Document]:
     """Load a PPTX file using python-pptx (fast, no unstructured dependency)."""
     prs = Presentation(file_path)
     texts = []
-    for i, slide in enumerate(prs.slides, 1):
+    for i, slide in enumerate(prs.slides, 1):   
         parts = []
         for shape in slide.shapes:
             if shape.has_text_frame:

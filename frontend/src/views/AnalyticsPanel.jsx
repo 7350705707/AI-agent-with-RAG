@@ -148,8 +148,8 @@ export default function AnalyticsPanel({ user }) {
                   <tbody>
                     {data.top_users.map((u, i) => (
                       <tr key={i} className="border-b border-slate-50 last:border-0">
-                        <td className="py-1.5">{u.user_id || 'anonymous'}</td>
-                        <td className="py-1.5 text-right font-medium text-slate-800">{u.count}</td>
+                        <td className="py-1.5">{u.username || 'guest'}</td>
+                        <td className="py-1.5 text-right font-medium text-slate-800">{u.messages}</td>
                       </tr>
                     ))}
                   </tbody>
