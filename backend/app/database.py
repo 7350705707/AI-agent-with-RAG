@@ -144,6 +144,13 @@ def init_db() -> None:
     except Exception:
         pass  # non-critical
 
+    # pending_approval column for users awaiting admin approval
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN pending_approval INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # already exists
+
     # AI-managed user memory (flexible key-value store, written by LLM tool calls)
     try:
         conn.executescript("""
@@ -364,6 +371,7 @@ def get_messages(conversation_id: str) -> list[dict]:
 def _user_row_to_dict(row) -> dict:
     d = dict(row)
     d["agents"] = json.loads(d["agents"])
+    d["pending_approval"] = bool(d.get("pending_approval", 0))
     return d
 
 
@@ -381,15 +389,22 @@ def get_user_by_id(user_id: str) -> dict | None:
     return _user_row_to_dict(row) if row else None
 
 
-def create_user(username: str, password_hash: str, role: str = "user", agents: list[str] | None = None) -> dict:
+def create_user(
+    username: str,
+    password_hash: str,
+    role: str = "user",
+    agents: list[str] | None = None,
+    is_active: int = 1,
+    pending_approval: bool = False,
+) -> dict:
     conn = _connect()
     user_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     agents_json = json.dumps(agents or ["chat"])
     conn.execute(
-        "INSERT INTO users (id, username, password, role, agents, is_active, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?,?,?)",
-        (user_id, username, password_hash, role, agents_json, 1, now, now),
+        "INSERT INTO users (id, username, password, role, agents, is_active, pending_approval, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (user_id, username, password_hash, role, agents_json, is_active, int(pending_approval), now, now),
     )
     conn.commit()
     row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
@@ -402,6 +417,30 @@ def list_users() -> list[dict]:
     rows = conn.execute("SELECT * FROM users ORDER BY created_at DESC").fetchall()
     conn.close()
     return [_user_row_to_dict(r) for r in rows]
+
+
+def list_pending_users() -> list[dict]:
+    """Return users awaiting admin approval (pending_approval=1, is_active=0)."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT * FROM users WHERE pending_approval=1 AND is_active=0 ORDER BY created_at ASC"
+    ).fetchall()
+    conn.close()
+    return [_user_row_to_dict(r) for r in rows]
+
+
+def approve_pending_user(user_id: str) -> bool:
+    """Activate a pending user (pending_approval -> 0, is_active -> 1)."""
+    conn = _connect()
+    now = datetime.now(timezone.utc).isoformat()
+    cur = conn.execute(
+        "UPDATE users SET is_active=1, pending_approval=0, updated_at=? WHERE id=? AND pending_approval=1",
+        (now, user_id),
+    )
+    conn.commit()
+    updated = cur.rowcount > 0
+    conn.close()
+    return updated
 
 
 def update_user(user_id: str, role: str | None = None, agents: list[str] | None = None, is_active: int | None = None) -> bool:

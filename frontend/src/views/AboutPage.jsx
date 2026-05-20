@@ -1,4 +1,4 @@
-﻿import React from 'react';
+﻿import React, { useState } from 'react';
 import {
   Bot,
   Shield,
@@ -12,20 +12,38 @@ import {
   Database,
   Layers,
   Users,
-  Info,
+  ClipboardCheck,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 
-const Feature = ({ icon: Icon, title, desc }) => (
-  <div className="flex gap-4 p-4 bg-gray-800/50 border border-gray-800 rounded-xl">
-    <div className="shrink-0 w-10 h-10 rounded-lg bg-blue-600/20 flex items-center justify-center">
-      <Icon size={18} className="text-blue-400" />
+function Section({ title, children }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="mb-8">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 w-full text-left mb-3 group"
+      >
+        <span className="text-xs uppercase tracking-wider text-gray-400 group-hover:text-gray-200 transition">{title}</span>
+        {open ? <ChevronDown size={13} className="text-gray-500" /> : <ChevronRight size={13} className="text-gray-500" />}
+      </button>
+      {open && children}
     </div>
-    <div>
-      <p className="text-sm font-medium text-gray-100">{title}</p>
-      <p className="text-xs text-gray-500 mt-1">{desc}</p>
+  );
+}
+
+function FeatureCard({ icon: Icon, color, title, children }) {
+  return (
+    <div className={`p-5 bg-gray-800/50 border border-gray-800 rounded-xl`}>
+      <div className={`w-10 h-10 rounded-lg ${color} flex items-center justify-center mb-3`}>
+        <Icon size={18} className="text-white" />
+      </div>
+      <p className="text-sm font-semibold text-gray-100 mb-2">{title}</p>
+      <p className="text-xs text-gray-400 leading-relaxed">{children}</p>
     </div>
-  </div>
-);
+  );
+}
 
 export default function AboutPage() {
   return (
@@ -36,76 +54,111 @@ export default function AboutPage() {
           <Bot size={30} />
         </div>
         <div>
-          <h1 className="text-2xl font-bold">Sarvam AI</h1>
-          <p className="text-sm text-gray-400">Secure, Offline, Multi-Agent AI Dashboard</p>
+          <h1 className="text-2xl font-bold">EduQuest Ecosystem</h1>
+          <p className="text-sm text-gray-400">Secure, Offline, Multi-Agent AI Platform</p>
         </div>
       </div>
 
       {/* Description */}
       <p className="text-sm text-gray-400 leading-relaxed mb-8">
-        Sarvam AI is a fully offline, privacy-first AI assistant platform designed for secure intranet
+        EduQuest Ecosystem is a fully offline, privacy-first AI assistant platform designed for secure intranet
         deployments. It runs entirely on your local network — no data ever leaves your organisation.
         Powered by <span className="text-blue-400">LM Studio</span> and open-source language models,
-        it provides conversational AI, exam generation, and a searchable knowledge library — all
-        without requiring an internet connection.
+        it provides conversational AI with document retrieval, exam paper generation with a multi-stage
+        approval workflow, and a searchable knowledge library — all without requiring an internet connection.
       </p>
 
-      {/* Agents */}
-      <h2 className="text-xs uppercase tracking-wider text-gray-500 mb-3">Agents</h2>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-8">
-        <div className="p-4 bg-blue-600/10 border border-blue-600/20 rounded-xl text-center">
-          <MessageSquare size={22} className="text-blue-400 mx-auto mb-2" />
-          <p className="text-sm font-medium">General AI Chat</p>
-          <p className="text-xs text-gray-500 mt-1">Conversational assistant with RAG knowledge retrieval</p>
+      {/* Core Systems */}
+      <Section title="Core Systems">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <FeatureCard icon={MessageSquare} color="bg-blue-600" title="RAG AI Chat">
+            Ask questions about your organisation's documents using Retrieval-Augmented Generation (RAG).
+            Uploaded files are chunked, embedded with sentence-transformers, and stored in ChromaDB.
+            At query time the system combines semantic vector search with BM25 full-text ranking
+            (hybrid retrieval) to surface the most relevant passages — which are then passed to the
+            language model as grounded context. Answers cite the source documents so you can verify them.
+          </FeatureCard>
+          <FeatureCard icon={FileText} color="bg-violet-600" title="Exam Paper Generator">
+            Automatically generate exam papers from any knowledge-base document or pasted text.
+            Supports three question formats: Multiple Choice (MCQ), True / False, and Fill in the Blanks.
+            You can control the difficulty level, number of questions per type, subject name, and
+            instructor details. The generator produces a clean plain-text paper with a separate answer
+            key. Generated papers are saved as conversations so you can retrieve, edit, and re-submit
+            them at any time.
+          </FeatureCard>
+          <FeatureCard icon={ClipboardCheck} color="bg-amber-600" title="Approval System">
+            Exam papers follow a configurable multi-stage approval workflow before they are finalised.
+            An officer submits a paper; it then passes through one or more approver stages (e.g.,
+            Reviewing Officer → Commanding Officer). Each approver can approve the paper (advancing it
+            to the next stage) or send it back with remarks — including flagging individual questions
+            for revision. Once all stages are approved the paper is locked and can be exported as
+            PDF, DOCX (×4 shuffled sets), or JSON. Officers receive a WhatsApp-style badge notification
+            when papers are awaiting their review.
+          </FeatureCard>
+          <FeatureCard icon={BookOpen} color="bg-emerald-600" title="Knowledge Base">
+            Upload PDF, DOCX, TXT, and other document formats to build a searchable library.
+            Each file is automatically split into overlapping text chunks (configurable size and
+            overlap) and indexed into both ChromaDB (for semantic/vector search) and SQLite FTS5
+            (for keyword/BM25 search). The hybrid retriever merges results from both engines using
+            Reciprocal Rank Fusion. Documents can be tagged, searched, and deleted individually.
+            All indexing runs locally — no cloud embedding API is needed.
+          </FeatureCard>
         </div>
-        <div className="p-4 bg-purple-600/10 border border-purple-600/20 rounded-xl text-center">
-          <FileText size={22} className="text-purple-400 mx-auto mb-2" />
-          <p className="text-sm font-medium">Exam Generator</p>
-          <p className="text-xs text-gray-500 mt-1">Auto-generate MCQ, T/F & fill-in-blank exams from documents</p>
-        </div>
-        <div className="p-4 bg-emerald-600/10 border border-emerald-600/20 rounded-xl text-center">
-          <BookOpen size={22} className="text-emerald-400 mx-auto mb-2" />
-          <p className="text-sm font-medium">Library Base</p>
-          <p className="text-xs text-gray-500 mt-1">Upload & manage reference documents for AI retrieval</p>
-        </div>
-      </div>
+      </Section>
 
-      {/* Features */}
-      <h2 className="text-xs uppercase tracking-wider text-gray-500 mb-3">Key Features</h2>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-8">
-        <Feature icon={WifiOff} title="100% Offline" desc="Runs entirely on your local network — no internet required." />
-        <Feature icon={Lock} title="Secure by Design" desc="JWT authentication, role-based access, and no external API calls." />
-        <Feature icon={Cpu} title="LM Studio Integration" desc="Connect any GGUF model via LM Studio's OpenAI-compatible API." />
-        <Feature icon={Database} title="FTS5 RAG Search" desc="Full-text search over your documents with BM25 ranking for fast retrieval." />
-        <Feature icon={Layers} title="Multi-Agent Architecture" desc="Separate specialised agents for chat, exams, and knowledge management." />
-        <Feature icon={Users} title="User Management" desc="Admin panel for creating users, assigning roles, and controlling agent access." />
-        <Feature icon={Server} title="FastAPI Backend" desc="Python FastAPI backend with SQLite persistence and streaming SSE responses." />
-        <Feature icon={Shield} title="Admin Controls" desc="Full admin panel for user management, model selection, and library control." />
-      </div>
-
-      {/* Tech Stack */}
-      <h2 className="text-xs uppercase tracking-wider text-gray-500 mb-3">Technology Stack</h2>
-      <div className="bg-gray-800/50 border border-gray-800 rounded-xl p-4 mb-8">
-        <div className="grid grid-cols-2 sm:grid-cols-3 gap-y-3 gap-x-4 text-sm">
+      {/* Key Features */}
+      <Section title="Key Features">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {[
-            ['Frontend', 'React + Vite + Tailwind CSS'],
-            ['Backend', 'Python FastAPI'],
-            ['Database', 'SQLite (WAL mode)'],
-            ['LLM Runtime', 'LM Studio (local GGUF models)'],
-            ['AI Framework', 'LangChain'],
-            ['Search', 'SQLite FTS5 (BM25)'],
-            ['Auth', 'JWT (HS256)'],
-            ['Deployment', 'Windows Service / IIS (HTTPS)'],
-          ].map(([label, val]) => (
-            <div key={label}>
-              <p className="text-xs text-gray-500">{label}</p>
-              <p className="text-gray-200">{val}</p>
+            [WifiOff, '100% Offline', 'Runs entirely on your local network — no internet required. Suitable for air-gapped or high-security environments.'],
+            [Lock, 'Secure by Design', 'JWT authentication, role-based access control, account approval workflow, and no external API calls.'],
+            [Cpu, 'LM Studio Integration', 'Connect any GGUF model via LM Studio\'s OpenAI-compatible local API. Swap models without restarting the server.'],
+            [Database, 'Hybrid RAG Search', 'FTS5 BM25 full-text search fused with ChromaDB vector search via Reciprocal Rank Fusion for best-of-both retrieval.'],
+            [Layers, 'Multi-Agent Architecture', 'Separate specialised agents for chat, exam generation, knowledge management, search, analytics, and approvals.'],
+            [Users, 'User Management', 'Admin panel with modal UI for creating users, assigning roles and agents, approving new signups, and resetting passwords.'],
+            [Server, 'FastAPI Backend', 'Python FastAPI with SQLite (WAL), streaming SSE chat responses, and optional Windows Service deployment.'],
+            [Shield, 'Approval Workflow', 'Multi-stage exam paper approval with per-stage officer assignment, send-back with question-level remarks, and export.'],
+          ].map(([Icon, title, desc]) => (
+            <div key={title} className="flex gap-3 p-4 bg-gray-800/50 border border-gray-800 rounded-xl">
+              <div className="shrink-0 w-9 h-9 rounded-lg bg-blue-600/20 flex items-center justify-center">
+                <Icon size={16} className="text-blue-400" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-gray-100">{title}</p>
+                <p className="text-xs text-gray-500 mt-1">{desc}</p>
+              </div>
             </div>
           ))}
         </div>
-      </div>
+      </Section>
+
+      {/* Tech Stack */}
+      <Section title="Technology Stack">
+        <div className="bg-gray-800/50 border border-gray-800 rounded-xl p-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-y-3 gap-x-4 text-sm">
+            {[
+              ['Frontend', 'React + Vite + Tailwind CSS'],
+              ['Backend', 'Python FastAPI'],
+              ['Database', 'SQLite (WAL mode) + FTS5'],
+              ['Vector Store', 'ChromaDB (local)'],
+              ['LLM Runtime', 'LM Studio (local GGUF models)'],
+              ['AI Framework', 'LangChain'],
+              ['Search', 'Hybrid: BM25 + Vector (RRF)'],
+              ['Auth', 'JWT (HS256) + bcrypt'],
+              ['Deployment', 'Windows Service / IIS (HTTPS)'],
+              ['Protocols', 'REST + SSE (streaming)'],
+            ].map(([label, val]) => (
+              <div key={label}>
+                <p className="text-xs text-gray-500">{label}</p>
+                <p className="text-gray-200 text-sm">{val}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Section>
 
       {/* Footer */}
+
       <div className="flex items-center gap-2 text-xs text-gray-600 border-t border-gray-800 pt-4">
         <Info size={13} />
         <span>Sarvam AI — Built for secure, offline enterprise deployments. Version 1.0.0</span>

@@ -13,6 +13,8 @@ import {
   MessageSquare,
   CheckSquare,
   ArrowRight,
+  Filter,
+  Trash2,
 } from 'lucide-react';
 import {
   getMySubmissions,
@@ -214,13 +216,29 @@ function SubmissionModal({ submission, isOfficer, onClose, onAction }) {
   const [remark, setRemark] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  // question-level rejection: set of question numbers officer wants to flag
+  const [rejectedQs, setRejectedQs] = useState(new Set());
+
+  const toggleQReject = (num) => {
+    setRejectedQs((prev) => {
+      const next = new Set(prev);
+      next.has(num) ? next.delete(num) : next.add(num);
+      return next;
+    });
+  };
 
   const handleSubmit = async () => {
     if (!action) return;
     setSaving(true);
     setError('');
     try {
-      await onAction(submission.id, action, remark);
+      // Append rejected question numbers to remark
+      let finalRemark = remark;
+      if (action === 'send_back' && rejectedQs.size > 0) {
+        const nums = Array.from(rejectedQs).sort((a, b) => a - b).join(', ');
+        finalRemark = `${remark ? remark + '\n' : ''}Rejected questions: ${nums}`;
+      }
+      await onAction(submission.id, action, finalRemark);
       onClose();
     } catch (err) {
       setError(err.message || 'Action failed');
@@ -321,19 +339,44 @@ function SubmissionModal({ submission, isOfficer, onClose, onAction }) {
                   return (
                     <div key={type}>
                       <p className="text-xs uppercase tracking-wider text-slate-400 font-semibold mb-1">{labels[type]}</p>
-                      {qs.map((q) => (
-                        <div key={q.number} className="text-sm text-slate-700 bg-white border border-slate-100 rounded-lg px-3 py-2 mb-1">
-                          <span className="font-medium text-slate-500 mr-1">{q.number}.</span>
-                          {q.stem || q.question || q.text || ''}
-                          {q.options?.length > 0 && (
-                            <ul className="mt-1 ml-4 space-y-0.5">
-                              {q.options.map((o, i) => (
-                                <li key={i} className="text-xs text-slate-600 list-disc">{o}</li>
-                              ))}
-                            </ul>
-                          )}
-                        </div>
-                      ))}
+                      {qs.map((q) => {
+                        const num = q.number ?? q.id;
+                        const isRej = rejectedQs.has(num);
+                        const showCross = canAct;
+                        return (
+                          <div key={num} className={`flex items-start gap-2 text-sm bg-white border rounded-lg px-3 py-2 mb-1 transition ${
+                            isRej ? 'border-red-300 bg-red-50' : 'border-slate-100'
+                          }`}>
+                            <div className="flex-1">
+                              <span className="font-medium text-slate-500 mr-1">{num}.</span>
+                              <span className={isRej ? 'text-red-400 line-through' : 'text-slate-700'}>
+                                {q.stem || q.question || q.text || ''}
+                              </span>
+                              {q.options?.length > 0 && (
+                                <ul className="mt-1 ml-4 space-y-0.5">
+                                  {q.options.map((o, i) => (
+                                    <li key={i} className="text-xs text-slate-600 list-disc">{o}</li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                            {showCross && (
+                              <button
+                                type="button"
+                                onClick={() => toggleQReject(num)}
+                                title={isRej ? 'Unmark' : 'Mark for rejection'}
+                                className={`shrink-0 mt-0.5 w-5 h-5 rounded flex items-center justify-center text-xs font-bold transition ${
+                                  isRej
+                                    ? 'bg-red-500 text-white hover:bg-red-400'
+                                    : 'bg-slate-200 text-slate-400 hover:bg-red-200 hover:text-red-600'
+                                }`}
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   );
                 })}
@@ -406,6 +449,13 @@ function SubmissionModal({ submission, isOfficer, onClose, onAction }) {
                 rows={3}
                 className="w-full bg-white border border-blue-200 rounded-lg px-3 py-2 text-sm text-slate-700 resize-none outline-none focus:border-blue-400 placeholder-slate-400"
               />
+
+              {rejectedQs.size > 0 && (
+                <p className="text-xs text-red-600 font-medium">
+                  {rejectedQs.size} question{rejectedQs.size > 1 ? 's' : ''} marked for rejection
+                </p>
+              )}
+
               {error && (
                 <div className="flex items-center gap-2 text-red-500 text-xs">
                   <AlertCircle size={14} /> {error}
@@ -482,6 +532,83 @@ function SubmissionCard({ sub, isOfficer, onClick }) {
       )}
       {sub.header?.subjectName && (
         <p className="mt-2 text-xs text-slate-400">Subject: {sub.header.subjectName}</p>
+      )}
+    </div>
+  );
+}
+
+// ── My Submissions — grouped by status ───────────────────────────────────
+
+function MySubmissionsView({ items, onCardClick }) {
+  const pending = items.filter((s) => s.status === 'pending');
+  const approved = items.filter((s) => s.status === 'approved');
+  const sentBack = items.filter((s) => s.status === 'sent_back');
+
+  const [showApproved, setShowApproved] = useState(pending.length === 0);
+  const [showSentBack, setShowSentBack] = useState(pending.length === 0);
+
+  const Section = ({ label, icon: Icon, colorCls, items: list, open, toggle }) => {
+    if (!list.length) return null;
+    return (
+      <div className="mb-4">
+        <button
+          onClick={toggle}
+          className={`flex items-center gap-2 text-sm font-semibold mb-2 ${colorCls} hover:opacity-80 transition`}
+        >
+          <Icon size={14} />
+          {label}
+          <span className="font-normal text-xs">({list.length})</span>
+          <ChevronRight size={13} className={`ml-auto transition-transform ${open ? 'rotate-90' : ''}`} />
+        </button>
+        {open && (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {list.map((sub) => (
+              <SubmissionCard key={sub.id} sub={sub} isOfficer={false} onClick={() => onCardClick(sub)} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div>
+      {/* Always visible: pending */}
+      {pending.length > 0 && (
+        <div className="mb-4">
+          <p className="flex items-center gap-2 text-sm font-semibold text-amber-700 mb-2">
+            <Clock size={14} /> Pending Review <span className="font-normal text-xs">({pending.length})</span>
+          </p>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {pending.map((sub) => (
+              <SubmissionCard key={sub.id} sub={sub} isOfficer={false} onClick={() => onCardClick(sub)} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <Section
+        label="Approved"
+        icon={CheckCircle}
+        colorCls="text-emerald-700"
+        items={approved}
+        open={showApproved}
+        toggle={() => setShowApproved((v) => !v)}
+      />
+      <Section
+        label="Sent Back"
+        icon={XCircle}
+        colorCls="text-red-600"
+        items={sentBack}
+        open={showSentBack}
+        toggle={() => setShowSentBack((v) => !v)}
+      />
+
+      {items.length === 0 && (
+        <div className="text-center py-16 text-slate-400">
+          <ClipboardList size={36} className="mx-auto mb-3 opacity-40" />
+          <p className="text-sm">You have not submitted any exam papers yet.</p>
+        </div>
       )}
     </div>
   );
@@ -605,7 +732,7 @@ export default function ApprovalPanel({ user }) {
           </div>
         )}
 
-        {!loading && items.length > 0 && (
+        {!loading && items.length > 0 && activeTab !== 'my' && (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {items.map((sub) => (
               <SubmissionCard
@@ -616,6 +743,10 @@ export default function ApprovalPanel({ user }) {
               />
             ))}
           </div>
+        )}
+
+        {!loading && items.length > 0 && activeTab === 'my' && (
+          <MySubmissionsView items={items} onCardClick={handleCardClick} />
         )}
 
         {detailLoading && (

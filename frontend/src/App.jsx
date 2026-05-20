@@ -9,6 +9,7 @@ import AnalyticsPanel from './views/AnalyticsPanel';
 import ApprovalPanel from './views/ApprovalPanel';
 import LoginPage from './views/LoginPage';
 import AboutPage from './views/AboutPage';
+import UserProfilePanel from './views/UserProfilePanel';
 import { getStoredUser, logout as apiLogout, getToken } from './api';
 
 export default function App() {
@@ -16,6 +17,7 @@ export default function App() {
   const [activeAgent, setActiveAgent] = useState('chat');
   const [activeConversation, setActiveConversation] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [profileOpen, setProfileOpen] = useState(false);
 
   const isLoggedIn = !!(getToken() && user);
 
@@ -120,11 +122,16 @@ export default function App() {
         toggle={() => setSidebarOpen(!sidebarOpen)}
         user={user}
         onLogout={handleLogout}
+        onOpenProfile={() => setProfileOpen(true)}
       />
 
       <main className="flex-1 flex flex-col min-w-0">
         {renderPanel()}
       </main>
+
+      {profileOpen && (
+        <UserProfilePanel user={user} onClose={() => setProfileOpen(false)} />
+      )}
     </div>
   );
 }

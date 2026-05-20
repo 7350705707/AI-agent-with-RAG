@@ -1,6 +1,7 @@
-"""MCP (Model Context Protocol) server — exposes Servam AI tools for LM Studio and other MCP clients."""
+"""MCP (Model Context Protocol) server — exposes EduQuest Ecosystem tools for LM Studio and other MCP clients."""
 
 import logging
+from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 
 from app.database import (
@@ -15,10 +16,11 @@ log = logging.getLogger(__name__)
 
 # ── Create MCP Server ──────────────────────────────────────────────────────
 mcp = FastMCP(
-    "Sarvam AI",
+    "EduQuest Ecosystem",
     instructions=(
-        "Sarvam AI MCP Server — provides tools to search the library (knowledge base), "
-        "list available documents, browse conversation history, and check model status. "
+        "EduQuest Ecosystem MCP Server — provides tools to search the library (knowledge base), "
+        "list available documents, browse conversation history, check model status, "
+        "get the current date, and save task/instruction memory for future recall. "
         "Use search_library to find relevant information from uploaded reference documents."
     ),
 )
@@ -187,6 +189,63 @@ def get_model_status() -> str:
         f"Active model: {active}\n"
         f"Available models ({len(model_ids)}): {', '.join(model_ids) or 'none detected'}"
     )
+
+
+@mcp.tool()
+def get_current_date() -> str:
+    """Get today's current date and time.
+
+    Returns the current date, day of week, and UTC time so the assistant
+    can answer questions like 'what is today's date?' or calculate
+    deadlines and upcoming dates.
+
+    Returns:
+        A human-readable string with today's date, day of week, and UTC time.
+    """
+    now = datetime.now(timezone.utc)
+    return (
+        f"Today is {now.strftime('%A, %d %B %Y')}.\n"
+        f"Current UTC time: {now.strftime('%H:%M:%S UTC')}.\n"
+        f"ISO format: {now.isoformat()}"
+    )
+
+
+@mcp.tool()
+def save_task_memory(task: str, context: str = "", user_id: str = "") -> str:
+    """Save a task or instruction with the current date for future recall.
+
+    Use this when the user gives you a task, sets a reminder, or mentions
+    something they want tracked over time. The saved memory includes the
+    date so upcoming deadlines and follow-ups can be calculated later.
+
+    Args:
+        task: Short description of the task or instruction (max 200 chars).
+        context: Additional context or details about the task (optional).
+        user_id: The user's ID for scoped memory (optional).
+
+    Returns:
+        Confirmation that the task was saved with its timestamp.
+    """
+    from app.database import upsert_user_memory
+    now = datetime.now(timezone.utc)
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M UTC")
+    key = f"task_{now.strftime('%Y%m%d_%H%M%S')}"
+    value = f"[{date_str} {time_str}] {task}"
+    if context:
+        value += f" | Context: {context}"
+    try:
+        upsert_user_memory(
+            user_id=user_id or "system",
+            key=key,
+            value=value,
+            category="task",
+            source="ai",
+        )
+        return f"Task saved: '{task}' (recorded on {date_str} at {time_str})"
+    except Exception as exc:
+        log.warning("save_task_memory failed: %s", exc)
+        return f"Task noted: '{task}' on {date_str}. (Memory save failed: {exc})"
 
 
 # ── Resources ──────────────────────────────────────────────────────────────

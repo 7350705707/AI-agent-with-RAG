@@ -1,8 +1,8 @@
-﻿import React, { useState } from 'react';
-import { Bot, LogIn, UserPlus, Loader2, AlertCircle } from 'lucide-react';
+import React, { useState } from 'react';
+import { Bot, LogIn, UserPlus, Loader2, AlertCircle, CheckCircle, Clock } from 'lucide-react';
 import { login, signup } from '../api';
 
-// ── Password strength calculator ─────────────────────────────────────────
+// -- Password strength calculator -----------------------------------------
 function getPasswordStrength(pw) {
   if (!pw) return { score: 0, label: '', color: '' };
   let score = 0;
@@ -27,6 +27,7 @@ export default function LoginPage({ onLogin }) {
   const [confirmPw, setConfirmPw] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [signupPending, setSignupPending] = useState(false);
 
   const strength = tab === 'signup' ? getPasswordStrength(password) : null;
 
@@ -35,6 +36,7 @@ export default function LoginPage({ onLogin }) {
     setPassword('');
     setConfirmPw('');
     setError('');
+    setSignupPending(false);
   };
 
   const switchTab = (t) => {
@@ -72,16 +74,48 @@ export default function LoginPage({ onLogin }) {
     setError('');
     setLoading(true);
     try {
-      const data = tab === 'login'
-        ? await login(username.trim(), password)
-        : await signup(username.trim(), password);
-      onLogin(data.user);
+      if (tab === 'login') {
+        const data = await login(username.trim(), password);
+        onLogin(data.user);
+      } else {
+        const data = await signup(username.trim(), password);
+        if (data.pending_approval) {
+          setSignupPending(true);
+        } else {
+          onLogin(data.user);
+        }
+      }
     } catch (err) {
       setError(err.message || `${tab === 'login' ? 'Login' : 'Signup'} failed`);
     } finally {
       setLoading(false);
     }
   };
+
+  // -- Pending approval screen ------------------------------------------
+  if (signupPending) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4">
+        <div className="w-full max-w-sm text-center">
+          <div className="w-16 h-16 rounded-full bg-amber-100 flex items-center justify-center mx-auto mb-4">
+            <Clock size={32} className="text-amber-500" />
+          </div>
+          <h2 className="text-xl font-semibold text-slate-900 mb-2">Account Pending Approval</h2>
+          <p className="text-sm text-slate-500 mb-6 leading-relaxed">
+            Your account <strong className="text-slate-700">@{username}</strong> has been created
+            and is awaiting admin approval. You will be able to sign in once an admin activates your account.
+          </p>
+          <button
+            onClick={() => { setSignupPending(false); setTab('login'); reset(); setUsername(username); }}
+            className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg py-2.5 text-sm font-medium transition"
+          >
+            <LogIn size={16} />
+            Back to Sign In
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center px-4">
@@ -91,7 +125,7 @@ export default function LoginPage({ onLogin }) {
           <div className="w-14 h-14 rounded-2xl bg-blue-600/10 flex items-center justify-center mb-4">
             <Bot size={28} className="text-blue-500" />
           </div>
-          <h1 className="text-xl font-semibold text-slate-900">Sarvam AI</h1>
+          <h1 className="text-xl font-semibold text-slate-900">EduQuest Ecosystem</h1>
           <p className="text-sm text-slate-500 mt-1">
             {tab === 'login' ? 'Sign in to your account' : 'Create a new account'}
           </p>
@@ -122,6 +156,14 @@ export default function LoginPage({ onLogin }) {
             Sign Up
           </button>
         </div>
+
+        {/* Signup info notice */}
+        {tab === 'signup' && (
+          <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3 text-xs text-amber-700">
+            <Clock size={14} className="shrink-0 mt-0.5" />
+            <span>New accounts require admin approval before you can sign in.</span>
+          </div>
+        )}
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4 shadow-sm">
@@ -168,7 +210,7 @@ export default function LoginPage({ onLogin }) {
                     />
                   ))}
                 </div>
-                <p className="text-xs text-slate-400">{strength.label} — must have 8+ chars, uppercase, digit &amp; special char</p>
+                <p className="text-xs text-slate-400">{strength.label} � must have 8+ chars, uppercase, digit &amp; special char</p>
               </div>
             )}
           </div>
@@ -204,15 +246,16 @@ export default function LoginPage({ onLogin }) {
               <UserPlus size={16} />
             )}
             {loading
-              ? (tab === 'login' ? 'Signing in…' : 'Creating account…')
+              ? (tab === 'login' ? 'Signing in�' : 'Creating account�')
               : (tab === 'login' ? 'Sign In' : 'Create Account')}
           </button>
         </form>
 
         <p className="text-center text-xs text-slate-400 mt-4">
-          Offline Intranet Application
+          EduQuest Ecosystem � Secure Offline Intranet Application
         </p>
       </div>
     </div>
   );
 }
+

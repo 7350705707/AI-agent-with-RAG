@@ -4,6 +4,11 @@ import { request } from './base.js';
 
 export const listUsers = () => request('/admin/users');
 
+export const listPendingUsers = () => request('/admin/pending-users');
+
+export const approveUser = (id) =>
+  request(`/admin/users/${id}/approve`, { method: 'POST' });
+
 export const createUser = (username, password, role, agents) =>
   request('/admin/users', {
     method: 'POST',

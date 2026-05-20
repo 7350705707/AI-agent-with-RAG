@@ -17,6 +17,8 @@ from app.database import (
     get_user_by_id,
     get_user_by_username,
     list_users,
+    list_pending_users,
+    approve_pending_user,
     list_knowledge_documents,
     update_knowledge_document_chunks,
     update_user,
@@ -36,6 +38,21 @@ _reindex_state: dict = {"status": "idle", "progress": None, "error": None}
 @router.get("/users", response_model=list[UserOut])
 def api_list_users(_admin: dict = Depends(require_admin)):
     return list_users()
+
+
+# ── Pending user approvals ─────────────────────────────────────────────────
+@router.get("/pending-users")
+def api_pending_users(_admin: dict = Depends(require_admin)):
+    """Return users who signed up and are awaiting admin approval."""
+    return list_pending_users()
+
+
+@router.post("/users/{user_id}/approve", response_model=UserOut)
+def api_approve_user(user_id: str, _admin: dict = Depends(require_admin)):
+    """Approve a pending user signup — activates their account."""
+    if not approve_pending_user(user_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Pending user not found")
+    return get_user_by_id(user_id)
 
 
 # ── Create user ────────────────────────────────────────────────────────────

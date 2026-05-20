@@ -1,6 +1,95 @@
-# Sarvam AI — Offline Intranet AI Dashboard
+# EduQuest Ecosystem
 
-A full-stack, fully offline AI dashboard designed for secure intranets and air-gapped environments. The **React 18** frontend communicates with a **FastAPI** backend that integrates with **LM Studio** (local LLM inference) and **ChromaDB** (vector store) to deliver RAG-powered conversational agents, an agentic tool-calling loop, an exam generator, a semantic knowledge base search, and usage analytics — all without any external API calls at runtime.
+A secure, fully-offline, multi-agent AI platform designed for intranet deployments. No data ever leaves your organisation. Runs entirely on your local network powered by LM Studio and open-source language models.
+
+---
+
+## Core Systems
+
+### RAG AI Chat
+Conversational AI assistant grounded in your organisation's documents. Uploaded files are split into overlapping chunks, embedded with sentence-transformers, and stored in **ChromaDB** (vector store). At query time the system performs **hybrid retrieval** — combining ChromaDB semantic search with SQLite FTS5 BM25 keyword search — and fuses results using Reciprocal Rank Fusion (RRF). The top passages are injected as context into the language model, producing answers that cite the source document. Chat history is persisted per-conversation and saved as Markdown files.
+
+### Exam Paper Generator
+Generate exam papers automatically from any knowledge-base document or pasted text. Supports three formats:
+- **MCQ** — Multiple Choice Questions with four options and a letter answer key
+- **True / False** — binary statement questions
+- **Fill in the Blanks** — sentence completion questions
+
+Control difficulty level, number of questions per format, subject, and instructor details. Output is plain-text with a separate answer key. Generated papers enter the **Approval Workflow** before they are finalised.
+
+### Approval Workflow
+Multi-stage approval pipeline for exam papers:
+1. An officer (exam creator) generates and submits a paper.
+2. The paper passes through one or more configured approver stages (e.g., Reviewing Officer → Commanding Officer).
+3. Each approver can **Approve** (advance to next stage) or **Send Back** with a remark.
+4. When sending back, approvers can flag **individual questions** for revision.
+5. Officers receive a **WhatsApp-style badge notification** in the sidebar when papers need their attention.
+6. Once all stages are approved the paper is locked and can be exported as PDF, DOCX (×4 shuffled sets), or JSON.
+7. The **My Submissions** view groups papers by status (Pending / Approved / Sent Back) with collapsible history sections.
+
+### Knowledge Base
+Upload PDF, DOCX, TXT, and other document formats to build a searchable library:
+- Files are chunked with configurable size and overlap.
+- Each chunk is embedded and indexed into ChromaDB (vector) + SQLite FTS5 (keyword).
+- The hybrid retriever merges both engines using RRF for best-of-both results.
+- Documents can be tagged, searched, and deleted individually.
+- All indexing runs locally — no cloud embedding API required.
+
+---
+
+## Additional Features
+
+| Feature | Description |
+|---|---|
+| **100% Offline** | Runs entirely on your local network. No internet required. |
+| **JWT Auth** | Secure login with HS256 JWT tokens and bcrypt password hashing. |
+| **Account Approval** | New signups require admin approval before login is allowed. |
+| **User Management** | Admin panel with modal UI: create users, assign roles and agents, approve signups, reset passwords. |
+| **User Profile** | Users can view their account details and change their own password from the profile panel. |
+| **LM Studio Integration** | Connect any GGUF model via LM Studio's OpenAI-compatible local API. Swap models without restarting. |
+| **MCP Tools** | Built-in Model Context Protocol tools: `get_current_date`, `save_task_memory`, and more. |
+| **Streaming Responses** | Chat uses Server-Sent Events (SSE) for real-time streamed token output. |
+| **Conversation History** | All chats saved as Markdown files with searchable history in the sidebar. |
+| **Windows Service** | Optional deployment as a Windows Service with IIS reverse-proxy (HTTPS). |
+
+---
+
+## Technology Stack
+
+| Layer | Technology |
+|---|---|
+| Frontend | React 18 + Vite + Tailwind CSS |
+| Backend | Python FastAPI |
+| Database | SQLite (WAL mode) + FTS5 |
+| Vector Store | ChromaDB (local) |
+| LLM Runtime | LM Studio (local GGUF models) |
+| AI Framework | LangChain |
+| Search | Hybrid: BM25 (FTS5) + Vector (ChromaDB) via RRF |
+| Authentication | JWT (HS256) + bcrypt |
+| Streaming | Server-Sent Events (SSE) |
+| Deployment | Windows Service / IIS (HTTPS) / Docker |
+
+---
+
+## Quick Start
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for full installation and configuration instructions.
+
+```bash
+# Backend
+cd backend
+pip install -r requirements.txt
+python run.py
+
+# Frontend
+cd frontend
+npm install
+npm run dev
+```
+
+Default admin credentials are set during first-run database initialisation (see `backend/app/database.py`).
+
+
 
 ---
 

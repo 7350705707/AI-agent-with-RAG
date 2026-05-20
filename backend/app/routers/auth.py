@@ -17,7 +17,7 @@ from app.auth import (
     hash_password,
     verify_password,
 )
-from app.database import create_user, get_user_by_id, get_user_by_username
+from app.database import create_user, get_user_by_id, get_user_by_username, update_user_password
 from app.models import LoginRequest, SignupRequest
 from app.utils.audit import audit_log
 
@@ -177,7 +177,12 @@ def api_login(body: LoginRequest, request: Request):
     if not user.get("is_active"):
         _record_failure(ip)
         _record_user_failure(body.username)
-        log.warning("Login attempt on disabled account username='%s'", body.username)
+        log.warning("Login attempt on disabled/pending account username='%s'", body.username)
+        # Distinguish between pending-approval accounts and admin-disabled accounts
+        pending = user.get("pending_approval", False)
+        if pending:
+            audit_log("LOGIN_FAILURE", username=body.username, ip=ip, reason="pending_approval")
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Account pending admin approval")
         audit_log("LOGIN_FAILURE", username=body.username, ip=ip, reason="account_disabled")
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Account disabled")
 
@@ -207,17 +212,12 @@ def api_signup(body: SignupRequest, request: Request):
         audit_log("SIGNUP_FAILURE", username=body.username, ip=ip, reason="username_taken")
         raise HTTPException(status.HTTP_409_CONFLICT, "Username already taken")
     pw_hash = hash_password(body.password)
-    user = create_user(body.username, pw_hash, role="user", agents=["chat"])
-    token = create_token(user["id"], user["username"], user["role"], user["agents"])
+    # New signups require admin approval — created as inactive with pending_approval flag
+    user = create_user(body.username, pw_hash, role="user", agents=["chat"], is_active=0, pending_approval=True)
     audit_log("SIGNUP_SUCCESS", username=user["username"], ip=ip)
     return {
-        "token": token,
-        "user": {
-            "id": user["id"],
-            "username": user["username"],
-            "role": user["role"],
-            "agents": user["agents"],
-        },
+        "pending_approval": True,
+        "message": "Account created successfully. Please wait for admin approval before you can log in.",
     }
 
 
@@ -233,3 +233,23 @@ def api_me(user: dict = Depends(get_current_user)):
         "role": db_user["role"],
         "agents": db_user["agents"],
     }
+
+
+# ── Change own password ────────────────────────────────────────────────────
+@router.put("/me/password")
+def api_change_password(body: dict, user: dict = Depends(get_current_user)):
+    """Allow the authenticated user to change their own password."""
+    current_pw = body.get("current_password", "")
+    new_pw = body.get("new_password", "")
+    if not current_pw or not new_pw:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "current_password and new_password are required")
+    if len(new_pw) < 8:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "New password must be at least 8 characters")
+    db_user = get_user_by_id(user["sub"])
+    if not db_user:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found")
+    if not verify_password(current_pw, db_user["password"]):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Current password is incorrect")
+    update_user_password(db_user["id"], hash_password(new_pw))
+    audit_log(db_user["username"], "change_password", "own password changed")
+    return {"message": "Password updated successfully"}
