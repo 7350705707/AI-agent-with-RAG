@@ -88,6 +88,16 @@ export const fetchExamTopics = (fileIds) =>
     body: JSON.stringify({ file_ids: fileIds }),
   });
 
+// ── Structured questions (DB persistence) ────────────────────────────────
+export const getExamQuestions = (conversationId) =>
+  request(`/exam/questions/${encodeURIComponent(conversationId)}`);
+
+export const saveExamQuestions = (conversationId, questions) =>
+  request(`/exam/questions/${encodeURIComponent(conversationId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ questions }),
+  });
+
 // ── File upload (conversation-scoped) ─────────────────────────────────────
 export const uploadFile = async (file, conversationId = null) => {
   const form = new FormData();

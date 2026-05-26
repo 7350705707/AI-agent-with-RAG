@@ -27,3 +27,13 @@ export const submitApprovalAction = (submissionId, action, remark = '') =>
     method: 'POST',
     body: JSON.stringify({ action, remark }),
   });
+
+export const deleteSubmission = (submissionId) =>
+  request(`/approval/${submissionId}`, { method: 'DELETE' });
+
+/** Owner or officer updates the questions of a submission. */
+export const updateSubmissionQuestions = (submissionId, questions) =>
+  request(`/approval/${submissionId}/questions`, {
+    method: 'PATCH',
+    body: JSON.stringify({ questions }),
+  });

@@ -210,6 +210,19 @@ def init_db() -> None:
     except sqlite3.OperationalError:
         pass
 
+    # Exam structured questions table (persists parsed questions per conversation)
+    try:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS exam_structured_questions (
+                conversation_id TEXT PRIMARY KEY,
+                questions_json  TEXT NOT NULL DEFAULT '[]',
+                updated_at      TEXT NOT NULL
+            );
+        """)
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
     # Ensure a default admin account exists
     # existing = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()
     # if not existing:
@@ -819,6 +832,28 @@ def list_my_submissions(user_id: str) -> list[dict]:
     return result
 
 
+def delete_submission(submission_id: str, user_id: str) -> bool:
+    """Delete a pending submission created by user_id. Returns True if deleted."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT status, created_by FROM exam_submissions WHERE id=?", (submission_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        return False
+    if row["created_by"] != user_id:
+        conn.close()
+        raise ValueError("Not authorized to delete this submission")
+    if row["status"] != "pending":
+        conn.close()
+        raise ValueError("Only pending submissions can be deleted")
+    conn.execute("DELETE FROM approval_stages WHERE submission_id=?", (submission_id,))
+    conn.execute("DELETE FROM exam_submissions WHERE id=?", (submission_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+
 def list_pending_for_officer(officer_id: str) -> list[dict]:
     """Return submissions where this officer is assigned to the current pending stage."""
     conn = _connect()
@@ -928,4 +963,88 @@ def list_approval_officers() -> list[dict]:
     ).fetchall()
     conn.close()
     return [{"id": r["id"], "username": r["username"]} for r in rows]
+
+
+# ── Structured exam questions (per conversation) ───────────────────────────
+
+def save_exam_structured_questions(conversation_id: str, questions: list) -> None:
+    """Persist parsed structured questions for a conversation (upsert)."""
+    conn = _connect()
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO exam_structured_questions (conversation_id, questions_json, updated_at)
+           VALUES (?,?,?)
+           ON CONFLICT(conversation_id) DO UPDATE SET questions_json=excluded.questions_json, updated_at=excluded.updated_at""",
+        (conversation_id, json.dumps(questions), now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_exam_structured_questions(conversation_id: str) -> list:
+    """Retrieve stored structured questions for a conversation. Returns [] if none."""
+    conn = _connect()
+    row = conn.execute(
+        "SELECT questions_json FROM exam_structured_questions WHERE conversation_id=?",
+        (conversation_id,),
+    ).fetchone()
+    conn.close()
+    if row:
+        try:
+            return json.loads(row["questions_json"])
+        except Exception:
+            return []
+    return []
+
+
+# ── Update submission questions (owner/approver editing) ──────────────────
+
+def update_submission_questions(
+    submission_id: str,
+    user_id: str,
+    questions: list,
+    user_role: str = "user",
+) -> dict:
+    """Allow owner or an assigned officer to update the questions of a submission.
+
+    Owner can edit only their own pending/sent_back submissions.
+    Officers can edit only pending submissions assigned to them.
+    Admins can edit any.
+    """
+    conn = _connect()
+    row = conn.execute(
+        "SELECT * FROM exam_submissions WHERE id=?", (submission_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        raise ValueError("Submission not found")
+    sub = dict(row)
+
+    is_admin = user_role == "admin"
+    is_owner = sub["created_by"] == user_id
+    # Check if user is an assigned officer for this submission
+    officer_stage = conn.execute(
+        "SELECT id FROM approval_stages WHERE submission_id=? AND officer_id=?",
+        (submission_id, user_id),
+    ).fetchone()
+    is_officer = officer_stage is not None
+
+    if not is_admin and not is_owner and not is_officer:
+        conn.close()
+        raise ValueError("Not authorized to edit this submission")
+
+    # Owner may only edit pending or sent_back submissions
+    if is_owner and not is_admin and sub["status"] not in ("pending", "sent_back"):
+        conn.close()
+        raise ValueError("Approved submissions cannot be edited")
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE exam_submissions SET questions_json=?, updated_at=? WHERE id=?",
+        (json.dumps(questions), now, submission_id),
+    )
+    conn.commit()
+    result = _row_to_submission(conn, conn.execute("SELECT * FROM exam_submissions WHERE id=?", (submission_id,)).fetchone())
+    conn.close()
+    return result
 

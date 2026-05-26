@@ -122,8 +122,19 @@ export default function LoginPage({ onLogin }) {
       <div className="w-full max-w-sm">
         {/* Brand */}
         <div className="flex flex-col items-center mb-8">
-          <div className="w-14 h-14 rounded-2xl bg-blue-600/10 flex items-center justify-center mb-4">
-            <Bot size={28} className="text-blue-500" />
+          <div className="w-20 h-20 flex items-center justify-center mb-3">
+            <img
+              src="/MCTE_logo.png"
+              alt="MCTE"
+              className="w-full h-full object-contain"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+                e.currentTarget.nextElementSibling.style.display = 'flex';
+              }}
+            />
+            <div className="hidden w-14 h-14 rounded-2xl bg-blue-600/10 items-center justify-center">
+              <Bot size={28} className="text-blue-500" />
+            </div>
           </div>
           <h1 className="text-xl font-semibold text-slate-900">EduQuest Ecosystem</h1>
           <p className="text-sm text-slate-500 mt-1">
@@ -246,13 +257,13 @@ export default function LoginPage({ onLogin }) {
               <UserPlus size={16} />
             )}
             {loading
-              ? (tab === 'login' ? 'Signing in�' : 'Creating account�')
+              ? (tab === 'login' ? 'Signing in...' : 'Creating account...')
               : (tab === 'login' ? 'Sign In' : 'Create Account')}
           </button>
         </form>
 
         <p className="text-center text-xs text-slate-400 mt-4">
-          EduQuest Ecosystem � Secure Offline Intranet Application
+          EduQuest Ecosystem &mdash; Secure Offline Intranet Application
         </p>
       </div>
     </div>

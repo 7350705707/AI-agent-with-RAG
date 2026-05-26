@@ -21,3 +21,8 @@ LLM_QUEUE_MAX = 10
 # decremented in the finally block).  Safe without a lock — asyncio is
 # single-threaded cooperative multitasking.
 llm_inflight: int = 0
+
+# ── Embedding availability ────────────────────────────────────────────────
+# Set to True in main.py startup once the embedding model is confirmed ready.
+# Routes that require embeddings check this flag via the require_embedding dep.
+embedding_ready: bool = False

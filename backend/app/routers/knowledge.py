@@ -22,7 +22,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 
-from app.auth import decode_token, get_current_user, get_optional_user, require_admin
+from app.auth import decode_token, get_current_user, get_optional_user, require_admin, require_embedding
 from app.chroma_store import add_knowledge_chunks, clear_knowledge, delete_knowledge_chunks
 from app.config import ALLOWED_EXTENSIONS, KNOWLEDGE_DIR, MAX_UPLOAD_SIZE_MB
 from app.database import (
@@ -48,6 +48,7 @@ def api_knowledge_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     user: dict = Depends(get_current_user),
+    _emb: None = Depends(require_embedding),
 ):
     ext = Path(file.filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
@@ -147,6 +148,7 @@ def api_knowledge_index(
     doc_id: str,
     background_tasks: BackgroundTasks,
     _user: dict = Depends(get_current_user),
+    _emb: None = Depends(require_embedding),
 ):
     """Manually trigger indexing for a document that has not been indexed yet."""
     doc = get_knowledge_document(doc_id)
@@ -235,6 +237,7 @@ def api_knowledge_download(
 def api_knowledge_summarize(
     doc_id: str,
     _user: dict = Depends(get_current_user),
+    _emb: None = Depends(require_embedding),
 ):
     """Generate an AI summary of the document using indexed chunks."""
     from app.chroma_store import search_knowledge, get_knowledge_chunk_count
@@ -279,6 +282,7 @@ def api_knowledge_search(
     q: str,
     limit: int = 10,
     _user: dict = Depends(get_current_user),
+    _emb: None = Depends(require_embedding),
 ):
     """Hybrid semantic + BM25 search over the entire knowledge base."""
     from app.chroma_store import search_knowledge, get_knowledge_chunk_count

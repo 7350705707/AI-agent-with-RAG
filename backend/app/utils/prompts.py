@@ -143,10 +143,9 @@ EXAM_PROMPT = ChatPromptTemplate.from_messages(
             "Example: 'The ______ is the basic unit of life.' "
             "NEVER write a Fill in the Blanks question without the ______ placeholder.\n\n"
             "Answer Key\n"
-            "MCQ: 1-A 2-C 3-B ... (one space between each, format: number-Letter)\n"
-            "True/False: pipe-separated on ONE line, format: number. True | number. False | ... "
-            "Example: 11. False | 12. True | 13. True | 14. False | (no new line between entries)\n"
-            "Fill in Blanks: {fitb_start}-word {fitb_end}-word ... (format: number-answer)\n\n"
+            "MCQ: 1-A 2-C 3-B ... (one space between each, format: QuestionNumber-Letter, start from 1)\n"
+            "True/False: 1-True 2-False 3-True ... (format: QuestionNumber-True or QuestionNumber-False, start from 1, one space between each)\n"
+            "Fill in Blanks: 1-answer 2-answer ... (format: QuestionNumber-answer, start from 1, one space between each)\n\n"
             "Do not deviate from this format. Do not add explanations or extra sections.",
         ),
         ("human", "{input}"),

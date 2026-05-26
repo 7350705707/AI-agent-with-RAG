@@ -50,19 +50,35 @@ def decode_token(token: str) -> dict:
 # ── FastAPI dependencies ───────────────────────────────────────────────────
 
 def get_current_user(
-    creds: HTTPAuthorizationCredentials = Depends(_bearer),
+    request: Request,
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer_optional),
 ) -> dict:
-    """Decode JWT and return user payload."""
-    return decode_token(creds.credentials)
+    """Decode JWT from Bearer header or httpOnly cookie."""
+    if creds is not None:
+        return decode_token(creds.credentials)
+    cookie_token = request.cookies.get("access_token")
+    if cookie_token:
+        return decode_token(cookie_token)
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
 
 
 def get_optional_user(
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer_optional),
 ) -> dict | None:
-    """Return user payload if token present, else None (guest)."""
-    if creds is None:
-        return None
-    return decode_token(creds.credentials)
+    """Return user payload if token present (header or cookie), else None (guest)."""
+    if creds is not None:
+        try:
+            return decode_token(creds.credentials)
+        except HTTPException:
+            return None
+    cookie_token = request.cookies.get("access_token")
+    if cookie_token:
+        try:
+            return decode_token(cookie_token)
+        except HTTPException:
+            return None
+    return None
 
 
 def require_admin(user: dict = Depends(get_current_user)) -> dict:
@@ -70,3 +86,37 @@ def require_admin(user: dict = Depends(get_current_user)) -> dict:
     if user.get("role") != "admin":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Admin access required")
     return user
+
+
+def require_embedding() -> None:
+    """Raise 503 if the embedding model is not available.
+
+    Automatically attempts to load the embedding model via LM Studio before
+    raising an error, so the user does not need to restart the server manually.
+    Inject as a dependency on any route that calls the vector store.
+    """
+    import logging
+    import app.utils.state as _state
+
+    if not _state.embedding_ready:
+        _log = logging.getLogger(__name__)
+        _log.info("Embedding not ready — attempting auto-load on demand...")
+        try:
+            from app.llm import ensure_embedding_model_loaded
+            from app.chroma_store import reset_collection
+            if ensure_embedding_model_loaded():
+                # ensure_embedding_model_loaded() already confirmed the endpoint
+                # is reachable via its internal probe-with-retries; reset the
+                # cached collection so it re-initializes with LM Studio embeddings.
+                reset_collection()
+                _state.embedding_ready = True
+                _log.info("Embedding model auto-loaded on demand — request will proceed.")
+                return
+        except Exception as _exc:
+            _log.warning("Auto-load attempt raised an exception: %s", _exc)
+
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Embedding model is not available and could not be auto-loaded. "
+            "Please ensure LM Studio is running and the embedding model is loaded.",
+        )

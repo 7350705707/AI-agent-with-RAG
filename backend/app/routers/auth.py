@@ -9,13 +9,24 @@ import threading
 import time
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from app.auth import (
     create_token,
     get_current_user,
     hash_password,
     verify_password,
+)
+from app.config import (
+    JWT_EXPIRE_HOURS,
+    AUTH_RATE_LIMIT,
+    AUTH_RATE_WINDOW,
+    AUTH_BLOCK_DURATION,
+    AUTH_USERNAME_FAIL_LIMIT,
+    AUTH_USERNAME_BLOCK_DURATION,
+    AUTH_SIGNUP_LIMIT,
+    AUTH_SIGNUP_WINDOW,
+    AUTH_SIGNUP_BLOCK,
 )
 from app.database import create_user, get_user_by_id, get_user_by_username, update_user_password
 from app.models import LoginRequest, SignupRequest
@@ -25,28 +36,17 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# ── In-memory rate limiter — shared by login AND signup ───────────────────
-_RATE_LIMIT = 5          # max failed attempts per window
-_RATE_WINDOW = 60        # seconds
-_BLOCK_DURATION = 300    # 5 minutes block after repeated IP failures
-
+# ── In-memory rate limiter — uses values from config.py ───────────────────
 _fail_counts: dict[str, list[float]] = defaultdict(list)
 _blocked_until: dict[str, float] = {}
 _rate_lock = threading.Lock()
 
-# ── Per-username lockout (independent of IP) ──────────────────────────────
-_USERNAME_FAIL_LIMIT = 10    # max consecutive failures per username
-_USERNAME_BLOCK_DURATION = 600  # 10 minutes
-
+# ── Per-username lockout ───────────────────────────────────────────────────
 _user_fail_counts: dict[str, list[float]] = defaultdict(list)
 _user_blocked_until: dict[str, float] = {}
 _user_lock = threading.Lock()
 
-# ── Signup rate limiter (per IP) ──────────────────────────────────────────
-_SIGNUP_LIMIT = 3            # max signups per window per IP
-_SIGNUP_WINDOW = 300         # 5 minutes
-_SIGNUP_BLOCK = 600          # 10 minutes block
-
+# ── Signup rate limiter ────────────────────────────────────────────────────
 _signup_counts: dict[str, list[float]] = defaultdict(list)
 _signup_blocked: dict[str, float] = {}
 _signup_lock = threading.Lock()
@@ -67,15 +67,15 @@ def _check_rate_limit(ip: str) -> None:
                 del _blocked_until[ip]
                 _fail_counts.pop(ip, None)
 
-        _fail_counts[ip] = [t for t in _fail_counts[ip] if now - t < _RATE_WINDOW]
-        if len(_fail_counts[ip]) >= _RATE_LIMIT:
-            _blocked_until[ip] = now + _BLOCK_DURATION
+        _fail_counts[ip] = [t for t in _fail_counts[ip] if now - t < AUTH_RATE_WINDOW]
+        if len(_fail_counts[ip]) >= AUTH_RATE_LIMIT:
+            _blocked_until[ip] = now + AUTH_BLOCK_DURATION
             _fail_counts.pop(ip, None)
-            log.warning("IP %s blocked for %ds after repeated login failures", ip, _BLOCK_DURATION)
+            log.warning("IP %s blocked for %ds after repeated login failures", ip, AUTH_BLOCK_DURATION)
             raise HTTPException(
                 status.HTTP_429_TOO_MANY_REQUESTS,
                 "Too many failed login attempts. Please try again later.",
-                headers={"Retry-After": str(_BLOCK_DURATION)},
+                headers={"Retry-After": str(AUTH_BLOCK_DURATION)},
             )
 
 
@@ -107,16 +107,16 @@ def _check_username_lockout(username: str) -> None:
                 _user_fail_counts.pop(username, None)
 
         _user_fail_counts[username] = [
-            t for t in _user_fail_counts[username] if now - t < _RATE_WINDOW
+            t for t in _user_fail_counts[username] if now - t < AUTH_RATE_WINDOW
         ]
-        if len(_user_fail_counts[username]) >= _USERNAME_FAIL_LIMIT:
-            _user_blocked_until[username] = now + _USERNAME_BLOCK_DURATION
+        if len(_user_fail_counts[username]) >= AUTH_USERNAME_FAIL_LIMIT:
+            _user_blocked_until[username] = now + AUTH_USERNAME_BLOCK_DURATION
             _user_fail_counts.pop(username, None)
-            log.warning("Username '%s' locked for %ds after repeated failures", username, _USERNAME_BLOCK_DURATION)
+            log.warning("Username '%s' locked for %ds after repeated failures", username, AUTH_USERNAME_BLOCK_DURATION)
             raise HTTPException(
                 status.HTTP_429_TOO_MANY_REQUESTS,
                 "Account temporarily locked. Please try again later.",
-                headers={"Retry-After": str(_USERNAME_BLOCK_DURATION)},
+                headers={"Retry-After": str(AUTH_USERNAME_BLOCK_DURATION)},
             )
 
 
@@ -147,22 +147,22 @@ def _check_signup_rate_limit(ip: str) -> None:
                 del _signup_blocked[ip]
                 _signup_counts.pop(ip, None)
 
-        _signup_counts[ip] = [t for t in _signup_counts[ip] if now - t < _SIGNUP_WINDOW]
-        if len(_signup_counts[ip]) >= _SIGNUP_LIMIT:
-            _signup_blocked[ip] = now + _SIGNUP_BLOCK
+        _signup_counts[ip] = [t for t in _signup_counts[ip] if now - t < AUTH_SIGNUP_WINDOW]
+        if len(_signup_counts[ip]) >= AUTH_SIGNUP_LIMIT:
+            _signup_blocked[ip] = now + AUTH_SIGNUP_BLOCK
             _signup_counts.pop(ip, None)
-            log.warning("IP %s blocked from signup for %ds", ip, _SIGNUP_BLOCK)
+            log.warning("IP %s blocked from signup for %ds", ip, AUTH_SIGNUP_BLOCK)
             raise HTTPException(
                 status.HTTP_429_TOO_MANY_REQUESTS,
                 "Too many signup attempts. Please try again later.",
-                headers={"Retry-After": str(_SIGNUP_BLOCK)},
+                headers={"Retry-After": str(AUTH_SIGNUP_BLOCK)},
             )
         _signup_counts[ip].append(now)
 
 
 # ── Login ──────────────────────────────────────────────────────────────────
 @router.post("/login")
-def api_login(body: LoginRequest, request: Request):
+def api_login(body: LoginRequest, request: Request, response: Response):
     ip = request.client.host if request.client else "unknown"
     _check_rate_limit(ip)
     _check_username_lockout(body.username)
@@ -191,6 +191,14 @@ def api_login(body: LoginRequest, request: Request):
     token = create_token(user["id"], user["username"], user["role"], user["agents"])
     log.info("User logged in: username='%s' role='%s'", user["username"], user["role"])
     audit_log("LOGIN_SUCCESS", username=user["username"], ip=ip, role=user["role"])
+    response.set_cookie(
+        key="access_token",
+        value=token,
+        httponly=True,
+        samesite="strict",
+        path="/",
+        max_age=int(JWT_EXPIRE_HOURS * 3600),
+    )
     return {
         "token": token,
         "user": {
@@ -200,6 +208,13 @@ def api_login(body: LoginRequest, request: Request):
             "agents": user["agents"],
         },
     }
+
+
+# ── Logout ──────────────────────────────────────────────────────────────────
+@router.post("/logout")
+def api_logout(response: Response):
+    response.delete_cookie(key="access_token", path="/")
+    return {"message": "Logged out"}
 
 
 # ── Signup ─────────────────────────────────────────────────────────────────

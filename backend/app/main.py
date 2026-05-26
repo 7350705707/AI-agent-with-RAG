@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from app.config import CORS_ORIGINS
+from app.config import CORS_ORIGINS, DEBUG, _FRONTEND_BUILD, _MCP_SECRET_KEY
 from app.utils.logger import setup_logging
 
 setup_logging()  # Must be first so all module-level loggers are configured
@@ -28,7 +28,7 @@ setup_logging()  # Must be first so all module-level loggers are configured
 log = logging.getLogger(__name__)
 
 from app.database import init_db
-from app.llm import ensure_model_loaded
+from app.llm import ensure_model_loaded, ensure_embedding_model_loaded
 from app.chroma_store import check_embedding_health
 from app.mcp_server import mcp as mcp_server
 
@@ -46,10 +46,8 @@ from app.routers.approval import router as approval_router
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-_DEBUG = os.getenv("DEBUG", "false").lower() in ("1", "true", "yes")
-
 # ── MCP secret key (set MCP_SECRET_KEY env var to protect the /mcp endpoint)
-_MCP_SECRET_KEY = os.getenv("MCP_SECRET_KEY", "")
+
 
 # ── Global per-IP rate limiter ─────────────────────────────────────────────
 _GLOBAL_LIMIT = 120        # max requests per window per IP
@@ -61,14 +59,14 @@ _global_rate_lock = threading.Lock()
 app = FastAPI(
     title="Sarvam AI API",
     version="1.0.0",
-    docs_url="/docs" if _DEBUG else None,
+    docs_url="/docs" if DEBUG else None,
     redoc_url=None,
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
 )
@@ -177,27 +175,48 @@ def startup():
     init_db()
     log.info("Database initialised.")
 
-    # ── Embedding health check ──────────────────────────────────────────────
-    from app.config import EMBEDDING_MODE
+    # ── Embedding health check + auto-load ─────────────────────────────────
+    from app.config import EMBEDDING_MODE, EMBEDDING_MODEL
+    from app.utils import state as _state
     embed_status = check_embedding_health()
     if embed_status["lmstudio_available"]:
+        _state.embedding_ready = True
         log.info(
             "Embedding: LM Studio reachable at %s (mode=%s).",
             embed_status["lmstudio_url"], EMBEDDING_MODE,
         )
     elif EMBEDDING_MODE == "lmstudio":
-        # Hard stop — operator explicitly required LM Studio embeddings
-        raise RuntimeError(
-            "EMBEDDING_MODE=lmstudio but LM Studio /v1/embeddings is not reachable "
-            f"({embed_status['lmstudio_url']}). "
-            "Load an embedding model in LM Studio or set EMBEDDING_MODE=auto."
+        log.warning(
+            "Embedding: /v1/embeddings not reachable (%s). "
+            "Attempting to auto-load '%s'...",
+            embed_status.get("error", "unknown error"),
+            EMBEDDING_MODEL or "(EMBEDDING_MODEL not set)",
         )
+        loaded = ensure_embedding_model_loaded()
+        if loaded:
+            embed_status = check_embedding_health()
+            if embed_status["lmstudio_available"]:
+                _state.embedding_ready = True
+                log.info("Embedding model '%s' loaded and ready.", EMBEDDING_MODEL)
+            else:
+                log.error(
+                    "Embedding model loaded but /v1/embeddings still unreachable. "
+                    "Knowledge upload, search and chat will return errors until resolved."
+                )
+        else:
+            log.error(
+                "Could not auto-load embedding model '%s'. "
+                "Knowledge upload, search and chat will return errors until resolved. "
+                "Set EMBEDDING_MODEL env var or start LM Studio manually.",
+                EMBEDDING_MODEL or "(not set)",
+            )
     else:
+        # auto mode — ONNX fallback is always available
+        _state.embedding_ready = True
         log.warning(
             "Embedding: LM Studio NOT reachable (%s). "
             "Falling back to ONNX (all-MiniLM-L6-v2). "
-            "Vectors indexed now will differ from any previously indexed with LM Studio. "
-            "Run POST /api/admin/reindex after LM Studio becomes available to fix this.",
+            "Vectors indexed now will differ from any previously indexed with LM Studio.",
             embed_status.get("error", "unknown error"),
         )
 
@@ -213,7 +232,7 @@ def health():
 
 
 # ── Serve React frontend (SPA fallback) ───────────────────────────────────
-_FRONTEND_BUILD = BASE_DIR.parent / "frontend" / "build"
+
 
 if _FRONTEND_BUILD.is_dir():
     app.mount(
@@ -224,7 +243,11 @@ if _FRONTEND_BUILD.is_dir():
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def serve_spa(full_path: str):
-        """Catch-all: return index.html for any non-API route (React SPA)."""
+        """Catch-all: serve static files from build root when they exist, else return index.html."""
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not found")
+        # Serve root-level static files (images, favicon, manifests, etc.)
+        candidate = _FRONTEND_BUILD / full_path
+        if candidate.is_file() and candidate.resolve().is_relative_to(_FRONTEND_BUILD.resolve()):
+            return FileResponse(str(candidate))
         return FileResponse(str(_FRONTEND_BUILD / "index.html"))

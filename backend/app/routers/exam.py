@@ -21,7 +21,7 @@ from app.agents.exam_agent import (
 )
 from app.auth import get_current_user
 from app.config import UPLOAD_DIR
-from app.database import add_message, register_conversation_file
+from app.database import add_message, register_conversation_file, save_exam_structured_questions, get_exam_structured_questions
 from app.llm import ensure_model_loaded, is_no_model_error
 from app.models import ExamRequest, TopicsRequest
 from app.utils.sanitizer import sanitize_user_input
@@ -31,6 +31,24 @@ from app.utils.state import llm_semaphore
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/exam", tags=["exam"])
+
+
+# ── Structured questions (per-conversation persistence) ───────────────────
+@router.get("/questions/{conversation_id}")
+def api_get_questions(conversation_id: str, _user: dict = Depends(get_current_user)):
+    """Return previously saved structured questions for a conversation."""
+    questions = get_exam_structured_questions(conversation_id)
+    return {"questions": questions}
+
+
+@router.post("/questions/{conversation_id}", status_code=201)
+def api_save_questions(conversation_id: str, body: dict, _user: dict = Depends(get_current_user)):
+    """Persist structured questions for a conversation."""
+    questions = body.get("questions", [])
+    if not isinstance(questions, list):
+        raise HTTPException(400, "questions must be a list")
+    save_exam_structured_questions(conversation_id, questions)
+    return {"saved": True}
 
 
 # ── Topic extraction ───────────────────────────────────────────────────────
@@ -165,6 +183,7 @@ async def api_exam_stream(
                 try:
                     questions = parse_exam_to_json(final_content)
                     if questions:
+                        save_exam_structured_questions(conv_id, questions)
                         yield f"data: {json.dumps({'step': 'structured', 'label': 'structured', 'content': '', 'questions': questions})}\n\n"
                 except Exception as parse_err:
                     log.warning("Failed to parse exam to JSON: %s", parse_err)

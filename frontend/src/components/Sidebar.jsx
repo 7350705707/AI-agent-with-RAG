@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   FileText,
   Plus,
@@ -21,7 +21,7 @@ import { listConversations, createConversation, deleteConversation, getPendingRe
 import ModelSelector from './ModelSelector';
 
 const ALL_AGENTS = [
-  { id: 'chat', label: 'RAG AI Chat', icon: Bot },
+  { id: 'chat', label: 'SetuAI Chat', icon: Bot },
   { id: 'exam', label: 'Exam Paper Generator', icon: FileText },
   { id: 'knowledge', label: 'Knowledge Base', icon: BookOpen },
   { id: 'search', label: 'KB Search', icon: Search },
@@ -119,8 +119,17 @@ export default function Sidebar({
         <div className="flex flex-col h-full">
           {/* Brand */}
           <div className="flex items-center gap-2 px-4 pt-14 pb-4 border-b border-indigo-800/50 shrink-0">
-            <div className="w-8 h-8 rounded-lg bg-indigo-500/30 flex items-center justify-center">
-              <Bot size={18} className="text-indigo-300" />
+            <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center overflow-hidden shrink-0">
+              <img
+                src="/MCTE_logo.png"
+                alt="MCTE"
+                className="w-full h-full object-contain p-0.5"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                  e.currentTarget.nextElementSibling.style.display = 'flex';
+                }}
+              />
+              <Bot size={18} className="text-indigo-300" style={{ display: 'none' }} />
             </div>
             <span className="font-bold text-sm tracking-wide text-white">EduQuest Ecosystem</span>
           </div>

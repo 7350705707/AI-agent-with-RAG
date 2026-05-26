@@ -69,6 +69,8 @@ from app.llm import (
     get_active_model,
     is_context_size_error,
     is_no_model_error,
+    _llm_base_url,
+    _llm_api_key,
 )
 from app.utils.history_store import (
     get_recent_exchanges,
@@ -364,8 +366,8 @@ def _build_history(conversation_id: str) -> list:
 def _raw_llm(temperature: float = 0.5, streaming: bool = False) -> ChatOpenAI:
     return ChatOpenAI(
         model=get_active_model(),
-        base_url=LM_STUDIO_BASE_URL,
-        api_key="lm-studio",
+        base_url=_llm_base_url(),
+        api_key=_llm_api_key(),
         temperature=temperature,
         max_tokens=1024,
         streaming=streaming,

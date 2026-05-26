@@ -21,11 +21,11 @@ from typing import List, Optional
 import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 
-from app.config import CHROMA_DIR, EMBEDDING_MODE, EMBEDDING_BATCH_SIZE, EMBEDDING_TIMEOUT, LM_STUDIO_BASE_URL
+from app.config import CHROMA_DIR, CHROMA_COLLECTION_NAME, EMBEDDING_MODE, EMBEDDING_BATCH_SIZE, EMBEDDING_TIMEOUT, LM_STUDIO_BASE_URL
 
 log = logging.getLogger(__name__)
 
-COLLECTION_NAME = "knowledge_chunks"
+COLLECTION_NAME = CHROMA_COLLECTION_NAME
 
 # ── Singleton client / collection ──────────────────────────────────────────
 _client: Optional[chromadb.Client] = None
@@ -128,6 +128,19 @@ def _get_collection() -> chromadb.Collection:
     _collection = _client.get_or_create_collection(**kwargs)
     log.info("ChromaDB collection '%s' ready (%d chunks).", COLLECTION_NAME, _collection.count())
     return _collection
+
+
+def reset_collection() -> None:
+    """Clear the cached ChromaDB client/collection singleton.
+
+    The next call to _get_collection() will re-initialize both the client and
+    the collection using the embedding function that is currently available
+    (e.g. LM Studio after the embedding model has been auto-loaded).
+    """
+    global _client, _collection
+    _collection = None
+    _client = None
+    log.info("ChromaDB collection cache cleared — will re-initialize on next access.")
 
 
 # ── Public API (matches the old SQLite knowledge functions) ────────────────

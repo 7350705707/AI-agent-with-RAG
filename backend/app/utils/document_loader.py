@@ -10,7 +10,9 @@ from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pptx import Presentation
 
-SPLITTER = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+from app.config import CHUNK_SIZE, CHUNK_OVERLAP
+
+SPLITTER = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
 
 
 def _load_pptx(file_path: str) -> list[Document]:

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.auth import get_current_user
 from app.database import (
+    delete_submission,
     get_submission_full,
     list_approval_officers,
     list_my_submissions,
@@ -12,6 +13,7 @@ from app.database import (
     list_processed_by_officer,
     process_approval_action,
     submit_exam_for_approval,
+    update_submission_questions,
 )
 from app.models import ApprovalActionRequest, SubmitApprovalRequest
 from app.utils.sanitizer import sanitize_user_input
@@ -93,6 +95,18 @@ def api_get_submission(submission_id: str, user: dict = Depends(get_current_user
     return sub
 
 
+@router.delete("/{submission_id}", status_code=204)
+def api_delete_submission(submission_id: str, user: dict = Depends(get_current_user)):
+    """Creator can delete their own pending submission."""
+    try:
+        ok = delete_submission(submission_id, user["sub"])
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    if not ok:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Submission not found")
+    log.info("Submission %s deleted by user %s", submission_id, user["sub"])
+
+
 @router.post("/{submission_id}/action")
 def api_action(
     submission_id: str,
@@ -111,4 +125,27 @@ def api_action(
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     log.info("Submission %s actioned '%s' by officer %s", submission_id, body.action, user["sub"])
+    return updated
+
+
+@router.patch("/{submission_id}/questions")
+def api_update_questions(
+    submission_id: str,
+    body: dict,
+    user: dict = Depends(get_current_user),
+):
+    """Owner or assigned officer updates the questions of a submission."""
+    questions = body.get("questions", [])
+    if not isinstance(questions, list):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "questions must be a list")
+    try:
+        updated = update_submission_questions(
+            submission_id=submission_id,
+            user_id=user["sub"],
+            questions=questions,
+            user_role=user.get("role", "user"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    log.info("Submission %s questions updated by user %s", submission_id, user["sub"])
     return updated

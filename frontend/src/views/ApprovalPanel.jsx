@@ -15,6 +15,10 @@ import {
   ArrowRight,
   Filter,
   Trash2,
+  Pencil,
+  Save,
+  PlusCircle,
+  MinusCircle,
 } from 'lucide-react';
 import {
   getMySubmissions,
@@ -22,6 +26,8 @@ import {
   getApprovalHistory,
   getSubmission,
   submitApprovalAction,
+  deleteSubmission,
+  updateSubmissionQuestions,
 } from '../api';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -177,47 +183,47 @@ function exportApprovalDoc(questions, title, header = {}) {
 
 function exportApprovalJson(questions, title, header = {}) {
   const base = title.replace(/\s+/g, '_');
-  EXPORT_SETS.forEach((label, idx) => {
-    const qs = shuffleByType(questions);
-    const sections = { mcq: [], true_false: [], fill_blank: [] };
-    qs.forEach((q) => { if (sections[q.type]) sections[q.type].push(q); });
-    const data = {
-      title: `${title} - Set ${label}`, set: label, header,
-      exported_at: new Date().toISOString(),
-      sections: Object.fromEntries(
-        Object.entries(sections).map(([type, qlist]) => [
-          type,
-          qlist.map((q, i) => ({
-            number: i + 1,
-            text: q.text || q.stem || q.question || '',
-            ...(q.options?.length ? { options: q.options } : {}),
-            ...(q.answer ? { answer: q.answer } : {}),
-          })),
-        ])
-      ),
-    };
-    setTimeout(() => {
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${base}_Set_${label}.json`;
-      document.body.appendChild(a); a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, idx * 400);
-  });
+  const sections = { mcq: [], true_false: [], fill_blank: [] };
+  questions.forEach((q) => { if (sections[q.type]) sections[q.type].push(q); });
+  const data = {
+    title, header,
+    exported_at: new Date().toISOString(),
+    sections: Object.fromEntries(
+      Object.entries(sections).map(([type, qlist]) => [
+        type,
+        qlist.map((q, i) => ({
+          number: i + 1,
+          text: q.text || q.stem || q.question || '',
+          ...(q.options?.length ? { options: q.options } : {}),
+          answer: q.answer || '',
+        })),
+      ])
+    ),
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${base}.json`;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 // ── Submission Detail / Review Modal ─────────────────────────────────────
 
-function SubmissionModal({ submission, isOfficer, onClose, onAction }) {
+function SubmissionModal({ submission, isOfficer, currentUserId, onClose, onAction }) {
   const [action, setAction] = useState('');
   const [remark, setRemark] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   // question-level rejection: set of question numbers officer wants to flag
   const [rejectedQs, setRejectedQs] = useState(new Set());
+  // inline question editing
+  const [editMode, setEditMode] = useState(false);
+  const [editedQuestions, setEditedQuestions] = useState([]);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState('');
 
   const toggleQReject = (num) => {
     setRejectedQs((prev) => {
@@ -255,6 +261,70 @@ function SubmissionModal({ submission, isOfficer, onClose, onAction }) {
   // Can this user take action? They must be the current stage's officer and status=pending
   const currentStageData = stages.find((s) => s.stage_number === submission.current_stage);
   const canAct = isOfficer && isPending && currentStageData?.status === 'pending';
+
+  // Can this user edit questions?
+  const isOwner = !isOfficer || submission.created_by === currentUserId;
+  const canEdit = !isFullyApproved && (
+    (isOwner && (isPending || isSentBack)) ||
+    canAct
+  );
+
+  const startEdit = () => {
+    setEditedQuestions(questions.map((q) => ({ ...q, options: q.options ? [...q.options] : [] })));
+    setEditMode(true);
+    setEditError('');
+  };
+
+  const cancelEdit = () => {
+    setEditMode(false);
+    setEditError('');
+  };
+
+  const updateEditQ = (idx, field, val) => {
+    setEditedQuestions((prev) => prev.map((q, i) => i === idx ? { ...q, [field]: val } : q));
+  };
+
+  const updateEditOption = (qIdx, oIdx, val) => {
+    setEditedQuestions((prev) =>
+      prev.map((q, i) => {
+        if (i !== qIdx) return q;
+        const opts = [...q.options];
+        opts[oIdx] = val;
+        return { ...q, options: opts };
+      })
+    );
+  };
+
+  const addOption = (qIdx) => {
+    setEditedQuestions((prev) =>
+      prev.map((q, i) => (i === qIdx ? { ...q, options: [...q.options, ''] } : q))
+    );
+  };
+
+  const removeOption = (qIdx, oIdx) => {
+    setEditedQuestions((prev) =>
+      prev.map((q, i) => {
+        if (i !== qIdx) return q;
+        const opts = q.options.filter((_, j) => j !== oIdx);
+        return { ...q, options: opts };
+      })
+    );
+  };
+
+  const saveEdits = async () => {
+    setEditSaving(true);
+    setEditError('');
+    try {
+      await updateSubmissionQuestions(submission.id, editedQuestions);
+      setEditMode(false);
+      // Update local display immediately
+      submission.questions = editedQuestions;
+    } catch (err) {
+      setEditError(err.message || 'Failed to save changes');
+    } finally {
+      setEditSaving(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
@@ -303,84 +373,180 @@ function SubmissionModal({ submission, isOfficer, onClose, onAction }) {
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
                   <CheckSquare size={14} className="text-emerald-500" />
-                  Questions ({questions.length})
+                  Questions ({editMode ? editedQuestions.length : questions.length})
                 </h3>
-                {isFullyApproved && (
-                  <div className="flex items-center gap-1.5 flex-wrap">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {isFullyApproved && !editMode && (
+                    <>
+                      <button
+                        onClick={() => exportApprovalPdf(questions, submission.title, header)}
+                        title="Export 4 shuffled PDF sets"
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-600 border border-emerald-200 rounded-lg transition"
+                      >
+                        <FileDown size={12} /> PDF ×4
+                      </button>
+                      <button
+                        onClick={() => exportApprovalDoc(questions, submission.title, header)}
+                        title="Export 4 shuffled DOCX sets"
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 rounded-lg transition"
+                      >
+                        <FileDown size={12} /> DOCX ×4
+                      </button>
+                      <button
+                        onClick={() => exportApprovalJson(questions, submission.title, header)}
+                        title="Export JSON for Exam Client"
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-violet-50 hover:bg-violet-100 text-violet-600 border border-violet-200 rounded-lg transition"
+                      >
+                        <FileDown size={12} /> JSON
+                      </button>
+                    </>
+                  )}
+                  {canEdit && !editMode && (
                     <button
-                      onClick={() => exportApprovalPdf(questions, submission.title, header)}
-                      title="Export 4 shuffled PDF sets"
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-600 border border-emerald-200 rounded-lg transition"
+                      onClick={startEdit}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-lg transition"
                     >
-                      <FileDown size={12} /> PDF ×4
+                      <Pencil size={12} /> Edit Questions
                     </button>
-                    <button
-                      onClick={() => exportApprovalDoc(questions, submission.title, header)}
-                      title="Export 4 shuffled DOCX sets"
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-50 hover:bg-blue-100 text-blue-600 border border-blue-200 rounded-lg transition"
-                    >
-                      <FileDown size={12} /> DOCX ×4
-                    </button>
-                    <button
-                      onClick={() => exportApprovalJson(questions, submission.title, header)}
-                      title="Export 4 shuffled JSON sets"
-                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-violet-50 hover:bg-violet-100 text-violet-600 border border-violet-200 rounded-lg transition"
-                    >
-                      <FileDown size={12} /> JSON ×4
-                    </button>
-                  </div>
-                )}
+                  )}
+                  {editMode && (
+                    <>
+                      <button
+                        onClick={cancelEdit}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg transition"
+                      >
+                        <X size={12} /> Cancel
+                      </button>
+                      <button
+                        onClick={saveEdits}
+                        disabled={editSaving}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg disabled:opacity-50 transition"
+                      >
+                        {editSaving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                        Save Changes
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
-              <div className="space-y-2 max-h-64 overflow-y-auto rounded-xl border border-slate-100 p-3 bg-slate-50">
-                {['mcq', 'true_false', 'fill_blank'].map((type) => {
-                  const qs = questions.filter((q) => q.type === type);
-                  if (!qs.length) return null;
-                  const labels = { mcq: 'Multiple Choice', true_false: 'True / False', fill_blank: 'Fill in the Blanks' };
-                  return (
-                    <div key={type}>
-                      <p className="text-xs uppercase tracking-wider text-slate-400 font-semibold mb-1">{labels[type]}</p>
-                      {qs.map((q) => {
-                        const num = q.number ?? q.id;
-                        const isRej = rejectedQs.has(num);
-                        const showCross = canAct;
-                        return (
-                          <div key={num} className={`flex items-start gap-2 text-sm bg-white border rounded-lg px-3 py-2 mb-1 transition ${
-                            isRej ? 'border-red-300 bg-red-50' : 'border-slate-100'
-                          }`}>
-                            <div className="flex-1">
-                              <span className="font-medium text-slate-500 mr-1">{num}.</span>
-                              <span className={isRej ? 'text-red-400 line-through' : 'text-slate-700'}>
-                                {q.stem || q.question || q.text || ''}
-                              </span>
-                              {q.options?.length > 0 && (
-                                <ul className="mt-1 ml-4 space-y-0.5">
-                                  {q.options.map((o, i) => (
-                                    <li key={i} className="text-xs text-slate-600 list-disc">{o}</li>
-                                  ))}
-                                </ul>
+
+              {editError && (
+                <p className="mb-2 text-xs text-red-600 bg-red-50 rounded-lg px-3 py-2 border border-red-200">{editError}</p>
+              )}
+
+              {/* View mode */}
+              {!editMode && (
+                <div className="space-y-2 max-h-64 overflow-y-auto rounded-xl border border-slate-100 p-3 bg-slate-50">
+                  {['mcq', 'true_false', 'fill_blank'].map((type) => {
+                    const qs = questions.filter((q) => q.type === type);
+                    if (!qs.length) return null;
+                    const labels = { mcq: 'Multiple Choice', true_false: 'True / False', fill_blank: 'Fill in the Blanks' };
+                    return (
+                      <div key={type}>
+                        <p className="text-xs uppercase tracking-wider text-slate-400 font-semibold mb-1">{labels[type]}</p>
+                        {qs.map((q) => {
+                          const num = q.number ?? q.id;
+                          const isRej = rejectedQs.has(num);
+                          return (
+                            <div key={num} className={`flex items-start gap-2 text-sm bg-white border rounded-lg px-3 py-2 mb-1 transition ${
+                              isRej ? 'border-red-300 bg-red-50' : 'border-slate-100'
+                            }`}>
+                              <div className="flex-1">
+                                <span className="font-medium text-slate-500 mr-1">{num}.</span>
+                                <span className={isRej ? 'text-red-400 line-through' : 'text-slate-700'}>
+                                  {q.stem || q.question || q.text || ''}
+                                </span>
+                                {q.options?.length > 0 && (
+                                  <ul className="mt-1 ml-4 space-y-0.5">
+                                    {q.options.map((o, i) => (
+                                      <li key={i} className="text-xs text-slate-600 list-disc">{o}</li>
+                                    ))}
+                                  </ul>
+                                )}
+                                {q.answer && (
+                                  <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded px-2 py-0.5 mt-1.5 inline-block">
+                                    ✓ Answer: <span className="font-medium">{q.answer}</span>
+                                  </p>
+                                )}
+                              </div>
+                              {canAct && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleQReject(num)}
+                                  title={isRej ? 'Unmark' : 'Mark for rejection'}
+                                  className={`shrink-0 mt-0.5 w-5 h-5 rounded flex items-center justify-center text-xs font-bold transition ${
+                                    isRej
+                                      ? 'bg-red-500 text-white hover:bg-red-400'
+                                      : 'bg-slate-200 text-slate-400 hover:bg-red-200 hover:text-red-600'
+                                  }`}
+                                >
+                                  ✕
+                                </button>
                               )}
                             </div>
-                            {showCross && (
-                              <button
-                                type="button"
-                                onClick={() => toggleQReject(num)}
-                                title={isRej ? 'Unmark' : 'Mark for rejection'}
-                                className={`shrink-0 mt-0.5 w-5 h-5 rounded flex items-center justify-center text-xs font-bold transition ${
-                                  isRej
-                                    ? 'bg-red-500 text-white hover:bg-red-400'
-                                    : 'bg-slate-200 text-slate-400 hover:bg-red-200 hover:text-red-600'
-                                }`}
-                              >
-                                ✕
-                              </button>
-                            )}
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Edit mode */}
+              {editMode && (
+                <div className="space-y-3 max-h-80 overflow-y-auto rounded-xl border border-amber-200 p-3 bg-amber-50/40">
+                  {editedQuestions.map((q, idx) => (
+                    <div key={idx} className="bg-white border border-slate-200 rounded-xl px-4 py-3 space-y-2">
+                      <div className="flex items-start gap-2">
+                        <span className="shrink-0 text-xs font-semibold text-slate-400 mt-2">{q.number ?? idx + 1}.</span>
+                        <textarea
+                          rows={2}
+                          value={q.text || q.stem || q.question || ''}
+                          onChange={(e) => updateEditQ(idx, q.text !== undefined ? 'text' : q.stem !== undefined ? 'stem' : 'question', e.target.value)}
+                          className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-amber-400 resize-none transition"
+                          placeholder="Question text"
+                        />
+                      </div>
+                      {q.type === 'mcq' && q.options !== undefined && (
+                        <div className="ml-6 space-y-1.5">
+                          <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Options</p>
+                          {(q.options || []).map((opt, oIdx) => (
+                            <div key={oIdx} className="flex items-center gap-2">
+                              <span className="shrink-0 text-xs text-slate-400 w-5 text-right">{String.fromCharCode(65 + oIdx)}.</span>
+                              <input
+                                type="text"
+                                value={opt}
+                                onChange={(e) => updateEditOption(idx, oIdx, e.target.value)}
+                                className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-amber-400 transition"
+                                placeholder={`Option ${String.fromCharCode(65 + oIdx)}`}
+                              />
+                              {(q.options || []).length > 2 && (
+                                <button
+                                  type="button"
+                                  onClick={() => removeOption(idx, oIdx)}
+                                  className="shrink-0 p-1 text-slate-400 hover:text-red-500 transition"
+                                  title="Remove option"
+                                >
+                                  <MinusCircle size={14} />
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                          {(q.options || []).length < 6 && (
+                            <button
+                              type="button"
+                              onClick={() => addOption(idx)}
+                              className="flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-500 mt-1 transition"
+                            >
+                              <PlusCircle size={13} /> Add option
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
-                  );
-                })}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -539,7 +705,7 @@ function SubmissionCard({ sub, isOfficer, onClick }) {
 
 // ── My Submissions — grouped by status ───────────────────────────────────
 
-function MySubmissionsView({ items, onCardClick }) {
+function MySubmissionsView({ items, onCardClick, onDelete }) {
   const pending = items.filter((s) => s.status === 'pending');
   const approved = items.filter((s) => s.status === 'approved');
   const sentBack = items.filter((s) => s.status === 'sent_back');
@@ -581,7 +747,18 @@ function MySubmissionsView({ items, onCardClick }) {
           </p>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {pending.map((sub) => (
-              <SubmissionCard key={sub.id} sub={sub} isOfficer={false} onClick={() => onCardClick(sub)} />
+              <div key={sub.id} className="relative group">
+                <SubmissionCard sub={sub} isOfficer={false} onClick={() => onCardClick(sub)} />
+                {onDelete && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onDelete(sub); }}
+                    title="Delete submission"
+                    className="absolute top-2 right-2 p-1 rounded-md bg-white border border-slate-200 text-slate-400 opacity-0 group-hover:opacity-100 hover:text-red-600 hover:border-red-300 transition"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         </div>
@@ -661,6 +838,16 @@ export default function ApprovalPanel({ user }) {
       setSelected(sub);
     } finally {
       setDetailLoading(false);
+    }
+  };
+
+  const handleDeleteSubmission = async (sub) => {
+    if (!window.confirm(`Delete "${sub.title}"? This cannot be undone.`)) return;
+    try {
+      await deleteSubmission(sub.id);
+      await load();
+    } catch (err) {
+      alert(err.message || 'Failed to delete submission');
     }
   };
 
@@ -746,7 +933,7 @@ export default function ApprovalPanel({ user }) {
         )}
 
         {!loading && items.length > 0 && activeTab === 'my' && (
-          <MySubmissionsView items={items} onCardClick={handleCardClick} />
+          <MySubmissionsView items={items} onCardClick={handleCardClick} onDelete={handleDeleteSubmission} />
         )}
 
         {detailLoading && (
@@ -761,6 +948,7 @@ export default function ApprovalPanel({ user }) {
         <SubmissionModal
           submission={selected}
           isOfficer={isOfficer}
+          currentUserId={user?.id || user?.sub}
           onClose={() => setSelected(null)}
           onAction={handleAction}
         />

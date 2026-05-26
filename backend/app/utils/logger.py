@@ -14,9 +14,12 @@ import logging.handlers
 import os
 from pathlib import Path
 
-# ── Configuration (override with env vars) ────────────────────────────────
+# ── Configuration (override with env vars or config.py) ───────────────────
 _LOG_DIR = Path(__file__).resolve().parent.parent.parent / "logs"
-_LOG_LEVEL_STR = os.environ.get("LOG_LEVEL", "INFO").upper()
+try:
+    from app.config import LOG_LEVEL as _LOG_LEVEL_STR  # type: ignore[import]
+except Exception:
+    _LOG_LEVEL_STR = os.environ.get("LOG_LEVEL", "INFO").upper()
 _LOG_LEVEL = getattr(logging, _LOG_LEVEL_STR, logging.INFO)
 
 _FMT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"

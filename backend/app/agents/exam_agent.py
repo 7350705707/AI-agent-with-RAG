@@ -8,10 +8,10 @@ from pathlib import Path
 import httpx
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
-from app.llm import get_llm, get_llm_streaming, get_active_model
+from app.llm import get_llm, get_llm_streaming, get_active_model, _llm_base_url, _llm_api_key
 from app.utils.prompts import EXAM_PROMPT, EXAM_PROMPT_NO_DOCS
 from app.database import get_messages
-from app.config import UPLOAD_DIR, LM_STUDIO_BASE_URL
+from app.config import UPLOAD_DIR
 from app.utils.document_loader import load_and_split
 
 log = logging.getLogger(__name__)
@@ -82,7 +82,7 @@ def extract_topics_from_files(file_ids: list[str]) -> list[str]:
             doc_text += "\n[...document truncated...]"
         combined += f"--- Document: {f['path'].name} ---\n{doc_text}\n\n"
 
-    base = LM_STUDIO_BASE_URL.rstrip("/")
+    base = _llm_base_url().rstrip("/")
     payload = {
         "model": get_active_model(),
         "messages": [
@@ -145,29 +145,64 @@ def parse_exam_to_json(text: str) -> list[dict]:
     current_section = None  # 'mcq' | 'true_false' | 'fill_blank' | 'answer_key'
     current_q: dict | None = None
 
-    # Parse answer key first so we can attach answers to questions
-    answers: dict[int, str] = {}
-    answer_key_match = re.search(
-        r"## Answer Key(.*?)(?:##|$)", text, re.DOTALL | re.IGNORECASE
+    # ── Parse answer key (section-aware, works with or without leading ##) ──
+    mcq_answers: dict[int, str] = {}
+    tf_answers:  dict[int, str] = {}
+    fitb_answers: dict[int, str] = {}
+
+    ak_match = re.search(
+        r"(?:#{1,3}\s*)?Answer Key\s*\n(.*)",
+        text,
+        re.DOTALL | re.IGNORECASE,
     )
-    if answer_key_match:
-        ak_text = answer_key_match.group(1)
-        # MCQ answers: "1. B | 2. C | ..."
-        for m in re.finditer(r"(\d+)\.\s*([A-Da-d])\s*\|?", ak_text):
-            answers[int(m.group(1))] = m.group(2).upper()
-        # True/False answers: "11. True | 12. False | ..."
-        for m in re.finditer(r"(\d+)\.\s*(True|False)\s*\|?", ak_text, re.IGNORECASE):
-            answers[int(m.group(1))] = m.group(2).capitalize()
-        # Fill in blanks answers: "21. word | 22. phrase | ..."
-        for m in re.finditer(r"(\d+)\.\s*([^|\n]+?)(?:\s*\||\s*$)", ak_text):
-            num = int(m.group(1))
-            if num not in answers:  # don't overwrite MCQ/TF
-                answers[num] = m.group(2).strip()
+    if ak_match:
+        ak_text = ak_match.group(1)
+
+        # MCQ: "MCQ: 1-A 2-C 3-B ..."  or  "1-A 2-C ..." on a line after "MCQ"
+        mcq_line = re.search(r"^MCQ:?\s*(.+)$", ak_text, re.MULTILINE | re.IGNORECASE)
+        if mcq_line:
+            for m in re.finditer(r"(\d+)[-.]?\s*([A-Da-d])(?=[\s|,]|$)", mcq_line.group(1)):
+                mcq_answers[int(m.group(1))] = m.group(2).upper()
+
+        # True/False: "True/False: 1-True 2-False ..."  or  "1. True | 2. False |"
+        tf_line = re.search(
+            r"^True[/\\-]?False:?\s*(.+)$", ak_text, re.MULTILINE | re.IGNORECASE
+        )
+        if tf_line:
+            for m in re.finditer(
+                r"(\d+)[-.]?\s*(True|False)\s*\|?", tf_line.group(1), re.IGNORECASE
+            ):
+                tf_answers[int(m.group(1))] = m.group(2).capitalize()
+
+        # Fill in Blanks: "Fill in Blanks: 1-answer 2-word ..."
+        fitb_line = re.search(
+            r"^Fill[^:\n]*:?\s*(.+)$", ak_text, re.MULTILINE | re.IGNORECASE
+        )
+        if fitb_line:
+            for m in re.finditer(
+                r"(\d+)-\s*([^\s|][^|]*?)(?=\s+\d+-|\s*$)", fitb_line.group(1)
+            ):
+                val = m.group(2).strip()
+                if val.lower() not in ("true", "false") and len(val) < 100:
+                    fitb_answers[int(m.group(1))] = val
+
+        log.debug(
+            "Answer key parsed: mcq=%d tf=%d fitb=%d",
+            len(mcq_answers), len(tf_answers), len(fitb_answers),
+        )
 
     def _save_current():
         if current_q and current_q.get("text"):
             qnum = current_q.get("number", 0)
-            current_q["answer"] = answers.get(qnum, "")
+            qtype = current_q.get("type")
+            if qtype == "mcq":
+                current_q["answer"] = mcq_answers.get(qnum, "")
+            elif qtype == "true_false":
+                current_q["answer"] = tf_answers.get(qnum, "")
+            elif qtype == "fill_blank":
+                current_q["answer"] = fitb_answers.get(qnum, "")
+            else:
+                current_q["answer"] = ""
             questions.append(current_q)
 
     for line in text.splitlines():
@@ -226,13 +261,6 @@ def parse_exam_to_json(text: str) -> list[dict]:
 
     _save_current()
 
-    # Post-process fill_blank questions: ensure every one contains the blank placeholder
-    for q in questions:
-        if q.get("type") == "fill_blank" and "______" not in q.get("text", ""):
-            text = q["text"].rstrip(".").rstrip()
-            q["text"] = text + " ______."
-            log.debug("Added blank placeholder to fill_blank Q%s", q.get("number"))
-
     return questions
 
 
@@ -276,7 +304,7 @@ def run_exam_generator_steps(
             combined_user_content += f"--- Document: {f['path'].name} ---\n{doc_text}\n\n"
 
         yield ("generating", "Generating exam paper…", "")
-        base = LM_STUDIO_BASE_URL.rstrip("/")
+        base = _llm_base_url().rstrip("/")
         payload = {
             "model": get_active_model(),
             "messages": [

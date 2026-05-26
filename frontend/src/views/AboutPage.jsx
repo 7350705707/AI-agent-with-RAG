@@ -15,6 +15,7 @@ import {
   ClipboardCheck,
   ChevronDown,
   ChevronRight,
+  Info,
 } from 'lucide-react';
 
 function Section({ title, children }) {
@@ -50,8 +51,19 @@ export default function AboutPage() {
     <div className="flex-1 overflow-y-auto px-6 py-8 max-w-3xl mx-auto w-full">
       {/* Hero */}
       <div className="flex items-center gap-4 mb-8">
-        <div className="w-14 h-14 rounded-2xl bg-blue-600 flex items-center justify-center shrink-0">
-          <Bot size={30} />
+        <div className="w-14 h-14 rounded-2xl overflow-hidden flex items-center justify-center shrink-0 bg-transparent">
+          <img
+            src="/MCTE_logo.png"
+            alt="MCTE"
+            className="w-full h-full object-contain"
+            onError={(e) => {
+              e.currentTarget.style.display = 'none';
+              e.currentTarget.nextElementSibling.style.display = 'flex';
+            }}
+          />
+          <div className="hidden w-full h-full rounded-2xl bg-blue-600 items-center justify-center">
+            <Bot size={30} />
+          </div>
         </div>
         <div>
           <h1 className="text-2xl font-bold">EduQuest Ecosystem</h1>

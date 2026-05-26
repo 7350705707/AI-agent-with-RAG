@@ -82,7 +82,7 @@ function EditUserModal({ user: u, onClose, onSave }) {
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
-          <h2 className="text-sm font-semibold text-slate-800">Edit User � {u.username}</h2>
+          <h2 className="text-sm font-semibold text-slate-800">Edit User &mdash; {u.username}</h2>
           <button onClick={onClose} className="p-1.5 rounded hover:bg-slate-100 text-slate-400 transition"><X size={16} /></button>
         </div>
         <div className="px-6 py-5 space-y-5">
@@ -286,7 +286,7 @@ export default function AdminPanel() {
           <div className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center">
             <Shield size={16} className="text-amber-600" />
           </div>
-          <h1 className="text-base font-semibold text-slate-800">Admin Panel � User Management</h1>
+          <h1 className="text-base font-semibold text-slate-800">Admin Panel &mdash; User Management</h1>
         </div>
         <div className="flex items-center gap-2">
           <button

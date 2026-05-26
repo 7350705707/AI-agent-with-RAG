@@ -1,4 +1,4 @@
-"""Shared LLM and vector-store factories (LM Studio for LLM, Ollama for embeddings)."""
+"""Shared LLM and vector-store factories (LM Studio or vLLM for LLM, LM Studio for embeddings)."""
 
 import os
 import logging
@@ -7,11 +7,24 @@ import subprocess
 import httpx
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
-from app.config import LM_STUDIO_BASE_URL, LLM_MODEL, MODEL_CONTEXT_LENGTH
+from app.config import (
+    LM_STUDIO_BASE_URL, LLM_MODEL, MODEL_CONTEXT_LENGTH,
+    LLM_BACKEND, VLLM_BASE_URL, VLLM_API_KEY, EMBEDDING_MODEL,
+)
 
 log = logging.getLogger(__name__)
 _active_model = LLM_MODEL
 _llm_cache: dict = {}
+
+
+def _llm_base_url() -> str:
+    """Return the active LLM backend base URL."""
+    return VLLM_BASE_URL if LLM_BACKEND == "vllm" else LM_STUDIO_BASE_URL
+
+
+def _llm_api_key() -> str:
+    """Return the API key for the active LLM backend."""
+    return VLLM_API_KEY if LLM_BACKEND == "vllm" else "lm-studio"
 
 
 def list_available_models() -> list[dict]:
@@ -68,11 +81,23 @@ def is_context_size_error(e: Exception) -> bool:
 
 
 def ensure_model_loaded() -> bool:
-    """Check LM Studio and load the configured model if it isn't already loaded.
+    """Check the active LLM backend and load the configured model if not already loaded.
 
     Returns True if the model is ready, False otherwise.
     """
-    # LM_STUDIO_BASE_URL already ends with /v1
+    # For vLLM, models are pre-loaded — just probe the endpoint.
+    if LLM_BACKEND == "vllm":
+        base = VLLM_BASE_URL.rstrip("/")
+        try:
+            resp = httpx.get(f"{base}/models", timeout=10, headers={"Authorization": f"Bearer {VLLM_API_KEY}"})
+            resp.raise_for_status()
+            log.info("vLLM is reachable. Models: %s", [m.get('id') for m in resp.json().get('data', [])])
+            return True
+        except Exception as e:
+            log.error("Cannot reach vLLM at %s: %s", base, e)
+            return False
+
+    # ── LM Studio path ────────────────────────────────────────────────────
     base = LM_STUDIO_BASE_URL.rstrip("/")
 
     # 1. Check if LM Studio is reachable and model is already loaded
@@ -118,6 +143,7 @@ def ensure_model_loaded() -> bool:
         result = subprocess.run(
             ["lms", "load", _active_model],
             capture_output=True, text=True, timeout=120,
+            encoding='utf-8', errors='replace',
         )
         if result.returncode == 0:
             log.info("'lms load' succeeded for model '%s'.", _active_model)
@@ -150,15 +176,127 @@ def ensure_model_loaded() -> bool:
     return False
 
 
+def ensure_embedding_model_loaded() -> bool:
+    """Attempt to load the configured EMBEDDING_MODEL in LM Studio.
+
+    Tries in order:
+      0. Quick probe — the model may already be loaded (e.g. loaded after server start).
+      1. POST /models/load — LM Studio REST API (current versions).
+      2. 'lms load' CLI — fallback for older LM Studio versions.
+
+    After each load attempt the /v1/embeddings endpoint is probed with retries
+    so we wait for the model to finish loading before declaring success.
+
+    Returns True once the embedding endpoint is confirmed reachable.
+    """
+    import time
+
+    if not EMBEDDING_MODEL:
+        log.info("EMBEDDING_MODEL env var not set; skipping embedding model auto-load.")
+        return False
+
+    base = LM_STUDIO_BASE_URL.rstrip("/")
+    embed_url = f"{base}/embeddings"
+
+    def _probe(timeout: float = 10.0) -> bool:
+        """Return True if the LM Studio /v1/embeddings endpoint responds."""
+        try:
+            resp = httpx.post(
+                embed_url,
+                json={"input": ["ping"]},
+                headers={"Authorization": "Bearer lm-studio"},
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            return True
+        except Exception:
+            return False
+
+    def _probe_with_retries(attempts: int = 10, delay: float = 3.0) -> bool:
+        """Probe up to `attempts` times, waiting `delay` s between each try."""
+        for i in range(attempts):
+            if _probe(timeout=10.0):
+                return True
+            if i < attempts - 1:
+                log.info(
+                    "Embedding probe %d/%d not ready — retrying in %.0fs…",
+                    i + 1, attempts, delay,
+                )
+                time.sleep(delay)
+        return False
+
+    # ── Step 0: probe first — might already be loaded ────────────────────
+    if _probe(timeout=5.0):
+        log.info("Embedding model already available at LM Studio.")
+        return True
+
+    # ── Step 1: POST /models/load ─────────────────────────────────────────
+    log.info("Requesting LM Studio to load embedding model '%s'...", EMBEDDING_MODEL)
+    try:
+        load_resp = httpx.post(
+            f"{base}/models/load",
+            json={"model": EMBEDDING_MODEL},
+            timeout=120,
+        )
+        if load_resp.status_code < 400:
+            log.info(
+                "POST /models/load accepted (HTTP %s). Probing embedding endpoint…",
+                load_resp.status_code,
+            )
+            if _probe_with_retries(attempts=10, delay=3.0):
+                log.info("Embedding model '%s' loaded and ready via API.", EMBEDDING_MODEL)
+                return True
+            log.warning(
+                "Embedding endpoint still unreachable after POST /models/load. "
+                "Model may still be loading — will try CLI fallback."
+            )
+        else:
+            log.warning(
+                "POST /models/load returned HTTP %s: %s",
+                load_resp.status_code, load_resp.text[:300],
+            )
+    except httpx.ConnectError:
+        log.error("Cannot reach LM Studio at %s to load embedding model.", base)
+        return False
+    except Exception as e:
+        log.warning("POST /models/load failed: %s", e)
+
+    # ── Step 2: lms CLI fallback ──────────────────────────────────────────
+    log.info("Trying 'lms load %s' CLI fallback for embedding model…", EMBEDDING_MODEL)
+    try:
+        result = subprocess.run(
+            ["lms", "load", EMBEDDING_MODEL],
+            capture_output=True, text=True, timeout=120,
+            encoding='utf-8', errors='replace',
+        )
+        if result.returncode == 0:
+            log.info("'lms load' succeeded for embedding model '%s'.", EMBEDDING_MODEL)
+            if _probe_with_retries(attempts=10, delay=3.0):
+                log.info("Embedding model '%s' ready after CLI load.", EMBEDDING_MODEL)
+                return True
+            log.warning("Embedding endpoint still unreachable after CLI load.")
+        else:
+            log.warning(
+                "'lms load' returned code %d: %s",
+                result.returncode, result.stderr[:200],
+            )
+    except FileNotFoundError:
+        log.debug("'lms' CLI not found in PATH; skipping CLI fallback.")
+    except Exception as e:
+        log.warning("'lms load' CLI failed: %s", e)
+
+    return False
+
+
 
 def get_llm(temperature: float = 0.3, num_predict: int = 1024):
-    """Return a cached LM Studio-backed LLM that outputs strings."""
+    """Return a cached LLM (LM Studio or vLLM) that outputs strings."""
     key = (_active_model, temperature, num_predict, False)
     if key not in _llm_cache:
         _llm_cache[key] = ChatOpenAI(
             model=_active_model,
-            base_url=LM_STUDIO_BASE_URL,
-            api_key="lm-studio",
+            base_url=_llm_base_url(),
+            api_key=_llm_api_key(),
             temperature=temperature,
             max_tokens=num_predict,
         ) | StrOutputParser()
@@ -166,13 +304,13 @@ def get_llm(temperature: float = 0.3, num_predict: int = 1024):
 
 
 def get_llm_streaming(temperature: float = 0.3, num_predict: int = 1024):
-    """Return a cached LM Studio-backed streaming LLM that outputs string tokens."""
+    """Return a cached streaming LLM (LM Studio or vLLM) that outputs string tokens."""
     key = (_active_model, temperature, num_predict, True)
     if key not in _llm_cache:
         _llm_cache[key] = ChatOpenAI(
             model=_active_model,
-            base_url=LM_STUDIO_BASE_URL,
-            api_key="lm-studio",
+            base_url=_llm_base_url(),
+            api_key=_llm_api_key(),
             temperature=temperature,
             max_tokens=num_predict,
             streaming=True,

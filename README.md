@@ -26,6 +26,8 @@ Multi-stage approval pipeline for exam papers:
 5. Officers receive a **WhatsApp-style badge notification** in the sidebar when papers need their attention.
 6. Once all stages are approved the paper is locked and can be exported as PDF, DOCX (×4 shuffled sets), or JSON.
 7. The **My Submissions** view groups papers by status (Pending / Approved / Sent Back) with collapsible history sections.
+8. Officers can **delete their own pending submissions** from the My Submissions view; answers are always included in the JSON export regardless of question type.
+9. The JSON export always includes the `answer` field for every question type to support automated downstream processing.
 
 ### Knowledge Base
 Upload PDF, DOCX, TXT, and other document formats to build a searchable library:
@@ -185,7 +187,9 @@ All components run **fully offline** — zero external API calls at runtime.
 | **Admin Panel** | Create users, assign roles, configure agent access, reset passwords |
 | **User Memory** | The AI remembers personal facts (name, role, location) across sessions |
 | **Model Selector** | Switch the active LLM model in LM Studio directly from the UI |
-| **JWT Authentication** | Secure login / signup with role-aware UI and session persistence |
+| **vLLM Backend** | Optional vLLM backend in addition to LM Studio — toggle via `LLM_BACKEND` env var |
+| **JWT Authentication** | Secure login / signup with `httpOnly` SameSite=Strict cookies + Bearer token fallback |
+| **Approval Workflow** | Multi-stage exam paper approval with per-question flagging; officers can delete pending submissions |
 | **Audit Log** | Tamper-evident security event log (logins, uploads, admin actions) |
 | **Fully Offline** | No internet dependency — ships with offline install scripts |
 
@@ -321,7 +325,7 @@ Model-AI/
 
 ### Entry Point & App Factory
 
-**`run.py`** launches Uvicorn programmatically, binding to `0.0.0.0:8000`.
+**`run.py`** launches Uvicorn programmatically, binding to `SERVER_HOST`:`SERVER_PORT` (defaults: `0.0.0.0:8000`). Both values and the log level are read from `app/config.py`.
 
 **`app/main.py`** is the FastAPI application factory. It:
 
@@ -340,13 +344,17 @@ Model-AI/
 
 ### Configuration
 
-All settings live in **`app/config.py`** and are driven by environment variables with sensible offline defaults.
+All settings live in **`app/config.py`** and are driven by environment variables with sensible offline defaults. Every constant that was previously scattered across individual modules (`COLLECTION_NAME`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `LOG_LEVEL`, `SERVER_HOST`, `SERVER_PORT`, `DEBUG`, all auth rate-limit thresholds) is now centralised here.
 
 | Variable | Default | Description |
 |---|---|---|
 | `LM_STUDIO_BASE_URL` | `http://localhost:1234/v1` | LM Studio OpenAI-compatible endpoint |
 | `LLM_MODEL` | `qwen2.5-7b-instruct-1m` | Model ID used for chat / exam generation |
+| `LLM_BACKEND` | `lmstudio` | LLM runtime: `lmstudio` or `vllm` |
+| `VLLM_BASE_URL` | `http://localhost:8080/v1` | vLLM endpoint (used when `LLM_BACKEND=vllm`) |
+| `VLLM_API_KEY` | `vllm-key` | API key for the vLLM endpoint |
 | `EMBEDDING_MODE` | `lmstudio` | `lmstudio` (LM Studio `/v1/embeddings`) or `auto` (ONNX fallback) |
+| `EMBEDDING_MODEL` | _(empty — uses active model)_ | Explicit embedding model ID to load in LM Studio at startup |
 | `EMBEDDING_TIMEOUT` | `120` | Seconds to wait per embedding batch call |
 | `EMBEDDING_BATCH_SIZE` | `32` | Number of chunks per embedding request |
 | `MODEL_CONTEXT_LENGTH` | `10000` | Token context window passed to LM Studio on load |
@@ -354,6 +362,20 @@ All settings live in **`app/config.py`** and are driven by environment variables
 | `MCP_SECRET_KEY` | _(empty)_ | Bearer token to protect the `/mcp` endpoint |
 | `DEBUG` | `false` | Enables `/docs` Swagger UI when `true` |
 | `JWT_EXPIRE_HOURS` | `24` | JWT token lifetime in hours |
+| `SERVER_HOST` | `0.0.0.0` | Host address Uvicorn binds to |
+| `SERVER_PORT` | `8000` | Port Uvicorn listens on |
+| `LOG_LEVEL` | `INFO` | Logging verbosity (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
+| `CHROMA_COLLECTION_NAME` | `knowledge_chunks` | ChromaDB collection name for document vectors |
+| `CHUNK_SIZE` | `1000` | Character size per document chunk |
+| `CHUNK_OVERLAP` | `200` | Overlap characters between adjacent chunks |
+| `AUTH_RATE_LIMIT` | `5` | Max failed login attempts per IP before block |
+| `AUTH_RATE_WINDOW` | `60` | Sliding window (seconds) for IP rate limiting |
+| `AUTH_BLOCK_DURATION` | `300` | IP block duration after exceeding rate limit (seconds) |
+| `AUTH_USERNAME_FAIL_LIMIT` | `10` | Max consecutive failures per username before lockout |
+| `AUTH_USERNAME_BLOCK_DURATION` | `600` | Per-username lockout duration (seconds) |
+| `AUTH_SIGNUP_LIMIT` | `3` | Max signup attempts per IP per window |
+| `AUTH_SIGNUP_WINDOW` | `300` | Signup rate-limit window (seconds) |
+| `AUTH_SIGNUP_BLOCK` | `600` | Signup block duration per IP (seconds) |
 
 **`JWT_SECRET`** is auto-generated with `secrets.token_hex(32)` on first run and saved to `backend/.jwt_secret` for persistence across restarts.
 
@@ -374,7 +396,10 @@ All settings live in **`app/config.py`** and are driven by environment variables
 Security measures in place:
 - Passwords are **never stored in plain text** (bcrypt with work factor).
 - JWTs are signed with a secret that is **never committed** to version control.
-- **Rate limiting** (global, per-IP) prevents brute-force and flooding.
+- On login the server sets an **`httpOnly` SameSite=Strict cookie** (`access_token`) so the token is invisible to JavaScript — protecting against XSS token theft.
+- All API requests are authenticated via the **cookie first**; the `Authorization: Bearer` header is accepted as a fallback for non-browser clients.
+- A `POST /api/auth/logout` endpoint clears the `access_token` cookie server-side.
+- **Rate limiting** (global per-IP, per-username lockout, signup throttle) prevents brute-force and flooding; all thresholds are configurable via `config.py`.
 - **CORS** is restricted to intranet origins only.
 - All admin endpoints require the `admin` role checked server-side.
 - The **audit log** records every login attempt, signup, upload, and admin action with timestamps and IP addresses.
@@ -401,12 +426,15 @@ Security measures in place:
 
 ### LLM Integration
 
-**`app/llm.py`** manages communication with LM Studio:
+**`app/llm.py`** manages communication with the configured LLM backend:
 
-- `get_llm()` — returns a `ChatOpenAI` instance pointed at the local LM Studio endpoint.
+- `get_llm()` — returns a `ChatOpenAI` instance pointed at LM Studio or vLLM depending on `LLM_BACKEND`.
 - `get_llm_streaming()` — returns a streaming-enabled `ChatOpenAI` instance.
 - `ensure_model_loaded(model_id)` — calls LM Studio's model-load endpoint and waits for readiness; used on startup and when switching models via the UI.
-- `is_no_model_error(exception)` / `is_context_size_error(exception)` — classify LM Studio error responses so agents can surface useful messages to the user.
+- `ensure_embedding_model_loaded()` — if `EMBEDDING_MODEL` is set, automatically loads it in LM Studio at startup before the first embedding request.
+- `is_no_model_error(exception)` / `is_context_size_error(exception)` — classify LLM error responses so agents can surface useful messages to the user.
+
+Set `LLM_BACKEND=vllm` and configure `VLLM_BASE_URL` / `VLLM_API_KEY` to use a vLLM server instead of LM Studio.
 
 ---
 
@@ -416,6 +444,7 @@ Security measures in place:
 
 - **`lmstudio` mode** — calls LM Studio's `/v1/embeddings` endpoint in configurable batches (default 32 chunks, 120 s timeout). Produces embeddings consistent with the active model's vector space.
 - **`auto` mode** — tries LM Studio first; if unreachable, falls back to ChromaDB's built-in ONNX `all-MiniLM-L6-v2` model. Useful for resilient deployments but risks mixing vector spaces between indexing runs.
+- The ChromaDB collection name defaults to `knowledge_chunks` and is configurable via `CHROMA_COLLECTION_NAME`.
 - `index_document(chunks, doc_id, filename)` — embeds and upserts document chunks into ChromaDB.
 - `search_knowledge(query, n_results, doc_ids)` — hybrid semantic + metadata-filtered search.
 - `delete_document(doc_id)` — removes all vectors belonging to a document.
@@ -428,7 +457,7 @@ Security measures in place:
 **`app/utils/document_loader.py`** converts uploaded files into LangChain `Document` chunks:
 
 - Supports **PDF** (PyPDF), **DOCX** (Docx2txt), and **PPTX** (python-pptx + unstructured).
-- Chunks at **1 000 characters** with **200-character overlap** using `RecursiveCharacterTextSplitter`.
+- Chunks at `CHUNK_SIZE` characters (default **1 000**) with `CHUNK_OVERLAP` overlap (default **200**) using `RecursiveCharacterTextSplitter`. Both values are configurable via `config.py` / environment variables.
 - Attaches rich metadata to each chunk: `filename`, `doc_type`, `chunk_index`, `total_chunks`, `heading_hint` (first line of the chunk if it looks like a heading).
 - Metadata enables per-document filtering in ChromaDB search.
 
@@ -464,7 +493,9 @@ Generates fully structured exam papers from knowledge base documents:
 
 - Accepts per-question-type counts: `mcq_count`, `tf_count` (True/False), `fitb_count` (Fill-in-the-Blank).
 - Retrieves relevant KB chunks, then instructs the LLM to produce a formatted exam paper with an answer key.
+- **Fill-in-the-Blank** questions are generated by the LLM using `______` markers — no frontend post-processing.
 - Streams the generated paper token-by-token via SSE.
+- Structured questions (`structured` SSE event) are stored in `sessionStorage` (tab-scoped) rather than `localStorage` to avoid persisting exam data beyond the browser session.
 
 ---
 
@@ -540,7 +571,7 @@ The audit logger (`utils/audit.py`) **does not propagate** to the general logger
 
 ### Service Layer
 
-All API communication is centralised in `src/services/`. Each module uses the `request()` helper from `base.js` which automatically attaches the `Authorization: Bearer <token>` header and handles 401 session expiry (clears token + reloads the page).
+All API communication is centralised in `src/services/`. Each module uses the `request()` helper from `base.js` which automatically attaches the `Authorization: Bearer <token>` header, sends credentials (cookies) with every request, and handles 401 session expiry (clears token + reloads the page).
 
 | Service | Key exports |
 |---|---|
@@ -579,6 +610,8 @@ Form-driven exam generation UI:
 - Inputs to set MCQ, True-False, and Fill-in-the-Blank question counts.
 - Optional file attachment for per-session documents.
 - Streams the generated exam paper in real time.
+- **Fill-in-the-Blank** blanks are produced by the LLM using `______` markers; no post-processing occurs in the frontend.
+- Structured questions received via the `structured` SSE event are persisted in **`sessionStorage`** (tab-scoped, auto-cleared on tab close) rather than `localStorage`.
 - **Download as `.txt`** button appears once generation is complete.
 
 #### `KnowledgePanel.jsx`
@@ -693,9 +726,10 @@ Event types emitted by the backend:
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| POST | `/api/auth/login` | None | Returns JWT token on valid credentials |
+| POST | `/api/auth/login` | None | Returns JWT token + sets `httpOnly` SameSite=Strict cookie on valid credentials |
 | POST | `/api/auth/signup` | None | Self-service user registration |
-| GET | `/api/auth/me` | Bearer | Return current authenticated user |
+| GET | `/api/auth/me` | Cookie / Bearer | Return current authenticated user |
+| POST | `/api/auth/logout` | Cookie / Bearer | Clears the `access_token` cookie server-side |
 
 ### Chat — `/api/chat`, `/api/agentic-chat`
 
@@ -743,6 +777,17 @@ Event types emitted by the backend:
 | PUT | `/api/admin/users/{id}` | Admin | Update role, active status, or agent permissions |
 | PUT | `/api/admin/users/{id}/password` | Admin | Reset a user's password |
 | DELETE | `/api/admin/users/{id}` | Admin | Delete a user |
+
+### Approval — `/api/approval`
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| POST | `/api/approval/submit` | Bearer | Submit an exam paper for approval |
+| GET | `/api/approval/pending` | Bearer | List papers pending review by the current approver |
+| POST | `/api/approval/approve/{id}` | Bearer | Approve a submission (advance to next stage) |
+| POST | `/api/approval/sendback/{id}` | Bearer | Send a paper back with remarks / flagged questions |
+| GET | `/api/approval/my-submissions` | Bearer | List papers submitted by the current user |
+| DELETE | `/api/approval/my-submissions/{id}` | Bearer | Delete a pending submission (officer only) |
 
 ### Analytics — `/api/analytics`
 
@@ -828,12 +873,22 @@ npm run build
 Edit `backend/app/config.py` or set environment variables before launching:
 
 ```bash
-# Windows PowerShell
+# Windows PowerShell — common overrides
 $env:LM_STUDIO_BASE_URL = "http://192.168.1.100:1234/v1"
 $env:LLM_MODEL           = "qwen2.5-7b-instruct-1m"
 $env:EMBEDDING_MODE      = "lmstudio"
+$env:EMBEDDING_MODEL     = "nomic-embed-text"  # auto-loaded at startup
 $env:CORS_ORIGINS        = "http://192.168.1.0,http://192.168.1.1"
-$env:DEBUG               = "true"   # enables /docs Swagger UI
+$env:DEBUG               = "true"              # enables /docs Swagger UI
+$env:SERVER_PORT         = "8080"              # change listen port
+$env:LOG_LEVEL           = "DEBUG"             # verbose logging
+$env:CHUNK_SIZE          = "800"               # smaller document chunks
+$env:CHUNK_OVERLAP       = "150"
+
+# vLLM backend (optional alternative to LM Studio)
+$env:LLM_BACKEND         = "vllm"
+$env:VLLM_BASE_URL       = "http://192.168.1.200:8080/v1"
+$env:VLLM_API_KEY        = "my-vllm-key"
 ```
 
 ```bash
@@ -842,7 +897,11 @@ export LM_STUDIO_BASE_URL="http://localhost:1234/v1"
 export LLM_MODEL="qwen2.5-7b-instruct-1m"
 export EMBEDDING_MODE="lmstudio"
 export DEBUG="false"
+export SERVER_PORT=8000
+export LOG_LEVEL=INFO
 ```
+
+See the [Configuration table](#configuration) in the Backend section for the full list of variables and their defaults.
 
 For the frontend dev proxy, edit `frontend/vite.config.js`:
 
