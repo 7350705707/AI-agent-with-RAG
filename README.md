@@ -4,6 +4,20 @@ A secure, fully-offline, multi-agent AI platform designed for intranet deploymen
 
 ---
 
+## Recent Improvements
+
+### Error Handling & Logging (May 2026)
+
+- **Critical bug fix** — `POST /api/chat/stream` (Classic RAG streaming endpoint) was missing its router decorator and would return HTTP 404. The endpoint is now correctly registered and functional.
+- **Database layer** (`database.py`) — all SQLite operations now wrap in `try/except` with structured `ERROR`-level logging. Connection and init failures log at `CRITICAL` level and halt server startup via `RuntimeError`, preventing silent operation with a broken database.
+- **Document processing** (`utils/document_loader.py`) — parse and load errors are caught and logged at `ERROR` level. Unsupported file types raise a logged `ValueError` rather than an unhandled exception.
+- **Routers** (`conversations.py`, `analytics.py`, `llm_router.py`) — all database and LLM calls are wrapped with `try/except`; failures return structured HTTP 500/503 responses and log at `ERROR` level instead of propagating as unhandled exceptions.
+- **JWT security audit trail** (`auth.py`) — `InvalidTokenError` failures are now logged at `WARNING` with the error type, enabling detection of token tampering; expired token events are logged at `DEBUG` to reduce noise.
+- **Startup protection** (`main.py`) — `init_db()` is wrapped in `try/except`; failure logs `CRITICAL` and raises `RuntimeError` to abort startup immediately.
+- **Log noise reduction** (`utils/logger.py`) — third-party logger suppression extended to cover `passlib`, `multipart`, `langchain_core.tracers`, and `openai._base_client` in addition to the existing list.
+
+---
+
 ## Core Systems
 
 ### RAG AI Chat
@@ -404,6 +418,8 @@ Security measures in place:
 - All admin endpoints require the `admin` role checked server-side.
 - The **audit log** records every login attempt, signup, upload, and admin action with timestamps and IP addresses.
 - **Input sanitization** (`utils/sanitizer.py`) is applied to user-supplied text before it enters LLM prompts.
+- **JWT decode failures** are logged at `WARNING` level (`InvalidTokenError` type recorded) to detect token tampering or forged tokens; expired tokens are logged at `DEBUG` level only.
+- **Database connection failures** are logged at `CRITICAL` level and prevent server startup, ensuring corrupted or missing database files are immediately visible.
 
 ---
 
@@ -421,6 +437,8 @@ Security measures in place:
 | `analytics_events` | Usage events (agent type, message length, timestamp) |
 
 `init_db()` creates all tables on first run using `CREATE TABLE IF NOT EXISTS`.
+
+All database functions wrap their SQLite calls in `try/except` blocks and log failures at `ERROR` level (or `CRITICAL` for connection errors) before propagating. A `CRITICAL`-level log from `init_db()` during startup causes the server to halt immediately via `RuntimeError`, preventing the application from running in a broken state with no database.
 
 ---
 
@@ -460,6 +478,7 @@ Set `LLM_BACKEND=vllm` and configure `VLLM_BASE_URL` / `VLLM_API_KEY` to use a v
 - Chunks at `CHUNK_SIZE` characters (default **1 000**) with `CHUNK_OVERLAP` overlap (default **200**) using `RecursiveCharacterTextSplitter`. Both values are configurable via `config.py` / environment variables.
 - Attaches rich metadata to each chunk: `filename`, `doc_type`, `chunk_index`, `total_chunks`, `heading_hint` (first line of the chunk if it looks like a heading).
 - Metadata enables per-document filtering in ChromaDB search.
+- All parse and load errors are caught and logged at `ERROR` level with the file path included; unsupported file extensions raise a logged `ValueError` rather than an unhandled exception.
 
 ---
 
@@ -507,7 +526,7 @@ Generates fully structured exam papers from knowledge base documents:
 
 ### Routers (API Controllers)
 
-All routers live in `app/routers/` and are registered with an `/api/` prefix.
+All routers live in `app/routers/` and are registered with an `/api/` prefix. Every router wraps its database and LLM calls in `try/except` blocks, logging failures at `ERROR` level and returning structured HTTP error responses (HTTP 500 for database errors, HTTP 503 for LLM backend errors) rather than letting unhandled exceptions propagate.
 
 | Router | Prefix | Purpose |
 |---|---|---|
@@ -545,11 +564,30 @@ Logs are written to `backend/logs/`:
 
 | File | Content | Rotation |
 |---|---|---|
-| `sarvam.log.YYYY-MM-DD` | General application events (INFO+) | Daily |
-| `errors.log.YYYY-MM-DD` | Error-level events only | Daily |
+| `servam.log.YYYY-MM-DD` | General application events (INFO+) | Daily, 30-day retention |
+| `errors.log.YYYY-MM-DD` | Error-level events only — fast triage | Daily, 30-day retention |
 | `audit.log` | Security events: logins, failures, uploads, admin actions | Daily, 90-day retention |
 
-The audit logger (`utils/audit.py`) **does not propagate** to the general logger, ensuring security events are never mixed with debug output.
+Log level is controlled by the `LOG_LEVEL` environment variable (`DEBUG`, `INFO`, `WARNING`, `ERROR`). The default is `INFO`.
+
+The **general log** (`servam.log`) captures:
+- HTTP request/response: method, path, status code, elapsed time
+- Startup lifecycle: database init, embedding health, model load
+- LLM calls: conversation ID, model errors, context-size errors
+- Knowledge base: document upload, chunk count, indexing progress, re-index status
+- User operations: conversation create/delete, message persistence errors
+
+The **error log** (`errors.log`) mirrors only `ERROR`-level events from the general log, making it trivial to detect problems without scanning the full log.
+
+The **audit log** (`audit.log`) records security-critical events exclusively — it does **not** propagate to the general log:
+- `LOGIN_SUCCESS` / `LOGIN_FAILURE` with username and IP
+- `LOGOUT`
+- `SIGNUP` / `SIGNUP_FAILURE`
+- `UPLOAD_SUCCESS` / `UPLOAD_REJECTED` (magic-byte mismatch, size exceeded)
+- Admin actions (user create, delete, password reset)
+- IP blocks and per-username lockouts
+
+The following third-party loggers are silenced to `WARNING` to reduce noise: `httpx`, `httpcore`, `chromadb.telemetry`, `urllib3`, `passlib`, `multipart`, `langchain_core.tracers`, `openai._base_client`.
 
 ---
 

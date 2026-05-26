@@ -1,5 +1,6 @@
 """Authentication & authorization helpers — JWT + bcrypt."""
 
+import logging
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -10,6 +11,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.config import JWT_SECRET, JWT_ALGORITHM, JWT_EXPIRE_HOURS
 
+log = logging.getLogger(__name__)
 _bearer = HTTPBearer()
 _bearer_optional = HTTPBearer(auto_error=False)
 
@@ -42,8 +44,10 @@ def decode_token(token: str) -> dict:
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     except jwt.ExpiredSignatureError:
+        log.debug("JWT decode failed: token expired")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token expired")
-    except jwt.InvalidTokenError:
+    except jwt.InvalidTokenError as exc:
+        log.warning("JWT decode failed: invalid token (%s)", type(exc).__name__)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
 
 

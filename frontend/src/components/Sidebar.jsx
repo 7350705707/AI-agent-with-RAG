@@ -103,22 +103,13 @@ export default function Sidebar({
   return (
     <aside
       className={`${
-        isOpen ? 'w-72' : 'w-0'
+        isOpen ? 'w-72' : 'w-12'
       } transition-all duration-200 bg-indigo-950 border-r border-indigo-900 flex flex-col overflow-hidden`}
     >
-      {/* Toggle button (always visible) */}
-      <button
-        onClick={toggle}
-        className="absolute top-3 left-3 z-50 p-1.5 rounded-md hover:bg-indigo-800 text-indigo-300 transition"
-        title={isOpen ? 'Collapse sidebar' : 'Expand sidebar'}
-      >
-        {isOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
-      </button>
-
-      {isOpen && (
-        <div className="flex flex-col h-full">
-          {/* Brand */}
-          <div className="flex items-center gap-2 px-4 pt-14 pb-4 border-b border-indigo-800/50 shrink-0">
+      {/* Brand + Toggle — always visible */}
+      <div className="flex items-center gap-2 px-3 py-3 border-b border-indigo-800/50 shrink-0">
+        {isOpen && (
+          <>
             <div className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center overflow-hidden shrink-0">
               <img
                 src="/MCTE_logo.png"
@@ -131,8 +122,20 @@ export default function Sidebar({
               />
               <Bot size={18} className="text-indigo-300" style={{ display: 'none' }} />
             </div>
-            <span className="font-bold text-sm tracking-wide text-white">EduQuest Ecosystem</span>
-          </div>
+            <span className="font-bold text-sm tracking-wide text-white truncate">EduQuest Ecosystem</span>
+          </>
+        )}
+        <button
+          onClick={toggle}
+          className={`${isOpen ? 'ml-auto' : 'mx-auto'} p-1.5 rounded-md hover:bg-indigo-800 text-indigo-300 transition shrink-0`}
+          title={isOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+        >
+          {isOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+        </button>
+      </div>
+
+      {isOpen && (
+        <div className="flex flex-col flex-1 min-h-0">
 
           {/* Pending approval alert for approvers */}
           {isApprover && pendingCount > 0 && (

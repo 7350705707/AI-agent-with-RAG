@@ -65,6 +65,9 @@ def api_chat(body: ChatRequest, _user: dict | None = Depends(get_optional_user))
             daemon=True,
         ).start()
     return {"conversation_id": body.conversation_id, "response": response}
+
+
+@router.post("/chat/stream")
 async def api_chat_stream(
     request: Request,
     body: ChatRequest,

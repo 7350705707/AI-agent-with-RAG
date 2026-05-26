@@ -1,6 +1,7 @@
 """SQLite helper for persisting chat history and user accounts."""
 
 import json
+import logging
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -8,19 +9,29 @@ from pathlib import Path
 
 from app.config import SQLITE_DB
 
+log = logging.getLogger(__name__)
+
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(SQLITE_DB), timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA busy_timeout=30000")
-    return conn
+    try:
+        conn = sqlite3.connect(str(SQLITE_DB), timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+        return conn
+    except sqlite3.Error as exc:
+        log.critical("Failed to open SQLite database at %s: %s", SQLITE_DB, exc, exc_info=True)
+        raise
 
 
 def init_db() -> None:
     """Create tables if they don't exist."""
-    conn = _connect()
+    try:
+        conn = _connect()
+    except sqlite3.Error:
+        log.critical("Cannot connect to database — aborting init_db()")
+        raise
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS conversations (
@@ -250,17 +261,21 @@ def init_db() -> None:
 # ── CRUD helpers ───────────────────────────────────────────────────────────
 
 def create_conversation(agent_type: str, title: str = "New Chat", user_id: str | None = None) -> dict:
-    conn = _connect()
-    conv_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        "INSERT INTO conversations (id, agent_type, title, created_at, updated_at, user_id) VALUES (?,?,?,?,?,?)",
-        (conv_id, agent_type, title, now, now, user_id),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM conversations WHERE id=?", (conv_id,)).fetchone()
-    conn.close()
-    return dict(row)
+    try:
+        conn = _connect()
+        conv_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            "INSERT INTO conversations (id, agent_type, title, created_at, updated_at, user_id) VALUES (?,?,?,?,?,?)",
+            (conv_id, agent_type, title, now, now, user_id),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM conversations WHERE id=?", (conv_id,)).fetchone()
+        conn.close()
+        return dict(row)
+    except sqlite3.Error as exc:
+        log.error("create_conversation failed (agent=%s user=%s): %s", agent_type, user_id, exc, exc_info=True)
+        raise
 
 
 def list_conversations(agent_type: str | None = None, user_id: str | None = "__unset__") -> list[dict]:
@@ -297,17 +312,21 @@ def get_conversation_ids_by_user(user_id: str) -> list[str]:
 
 
 def delete_conversation(conv_id: str) -> bool:
-    conn = _connect()
-    # Collect file paths registered for this conversation before deleting
-    file_rows = conn.execute(
-        "SELECT file_path FROM conversation_files WHERE conversation_id=?", (conv_id,)
-    ).fetchall()
-    conn.execute("DELETE FROM conversation_files WHERE conversation_id=?", (conv_id,))
-    conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv_id,))
-    cur = conn.execute("DELETE FROM conversations WHERE id=?", (conv_id,))
-    conn.commit()
-    deleted = cur.rowcount > 0
-    conn.close()
+    try:
+        conn = _connect()
+        # Collect file paths registered for this conversation before deleting
+        file_rows = conn.execute(
+            "SELECT file_path FROM conversation_files WHERE conversation_id=?", (conv_id,)
+        ).fetchall()
+        conn.execute("DELETE FROM conversation_files WHERE conversation_id=?", (conv_id,))
+        conn.execute("DELETE FROM messages WHERE conversation_id=?", (conv_id,))
+        cur = conn.execute("DELETE FROM conversations WHERE id=?", (conv_id,))
+        conn.commit()
+        deleted = cur.rowcount > 0
+        conn.close()
+    except sqlite3.Error as exc:
+        log.error("delete_conversation failed (conv_id=%s): %s", conv_id, exc, exc_info=True)
+        raise
     # Delete uploaded files from disk
     if deleted:
         import shutil
@@ -316,8 +335,8 @@ def delete_conversation(conv_id: str) -> bool:
             if fp.exists():
                 try:
                     shutil.rmtree(fp.parent, ignore_errors=True)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("Could not delete upload dir for conv %s: %s", conv_id, exc)
     return deleted
 
 
@@ -344,21 +363,25 @@ def rename_conversation(conv_id: str, title: str) -> bool:
 
 
 def add_message(conversation_id: str, role: str, content: str, sources: list | None = None) -> dict:
-    conn = _connect()
-    msg_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    sources_json = json.dumps(sources or [])
-    conn.execute(
-        "INSERT INTO messages (id, conversation_id, role, content, sources, created_at) VALUES (?,?,?,?,?,?)",
-        (msg_id, conversation_id, role, content, sources_json, now),
-    )
-    conn.execute(
-        "UPDATE conversations SET updated_at=? WHERE id=?", (now, conversation_id)
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
-    conn.close()
-    return dict(row)
+    try:
+        conn = _connect()
+        msg_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        sources_json = json.dumps(sources or [])
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, sources, created_at) VALUES (?,?,?,?,?,?)",
+            (msg_id, conversation_id, role, content, sources_json, now),
+        )
+        conn.execute(
+            "UPDATE conversations SET updated_at=? WHERE id=?", (now, conversation_id)
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
+        conn.close()
+        return dict(row)
+    except sqlite3.Error as exc:
+        log.error("add_message failed (conv=%s role=%s): %s", conversation_id, role, exc, exc_info=True)
+        raise
 
 
 def get_messages(conversation_id: str) -> list[dict]:
@@ -410,19 +433,27 @@ def create_user(
     is_active: int = 1,
     pending_approval: bool = False,
 ) -> dict:
-    conn = _connect()
-    user_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    agents_json = json.dumps(agents or ["chat"])
-    conn.execute(
-        "INSERT INTO users (id, username, password, role, agents, is_active, pending_approval, created_at, updated_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
-        (user_id, username, password_hash, role, agents_json, is_active, int(pending_approval), now, now),
-    )
-    conn.commit()
-    row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
-    conn.close()
-    return _user_row_to_dict(row)
+    try:
+        conn = _connect()
+        user_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        agents_json = json.dumps(agents or ["chat"])
+        conn.execute(
+            "INSERT INTO users (id, username, password, role, agents, is_active, pending_approval, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (user_id, username, password_hash, role, agents_json, is_active, int(pending_approval), now, now),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        conn.close()
+        log.info("User created: username=%s role=%s", username, role)
+        return _user_row_to_dict(row)
+    except sqlite3.IntegrityError as exc:
+        log.warning("create_user conflict (username=%s): %s", username, exc)
+        raise
+    except sqlite3.Error as exc:
+        log.error("create_user failed (username=%s): %s", username, exc, exc_info=True)
+        raise
 
 
 def list_users() -> list[dict]:

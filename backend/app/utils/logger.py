@@ -83,7 +83,11 @@ def setup_logging() -> None:
     root.addHandler(console_handler)
 
     # Suppress noisy third-party loggers
-    for noisy in ("httpx", "httpcore", "chromadb.telemetry", "urllib3"):
+    for noisy in (
+        "httpx", "httpcore", "chromadb.telemetry", "urllib3",
+        "passlib", "multipart", "python_multipart", "pptx",
+        "langchain_core.tracers", "openai._base_client",
+    ):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     logging.getLogger(__name__).info(

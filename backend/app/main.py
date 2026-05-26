@@ -172,8 +172,12 @@ app.include_router(approval_router)
 @app.on_event("startup")
 def startup():
     log.info("Sarvam AI backend starting up…")
-    init_db()
-    log.info("Database initialised.")
+    try:
+        init_db()
+        log.info("Database initialised.")
+    except Exception as exc:
+        log.critical("Database initialisation failed — server cannot start: %s", exc, exc_info=True)
+        raise RuntimeError(f"Database init failed: {exc}") from exc
 
     # ── Embedding health check + auto-load ─────────────────────────────────
     from app.config import EMBEDDING_MODE, EMBEDDING_MODEL
