@@ -21,8 +21,8 @@ export default function App() {
 
   const isLoggedIn = !!(getToken() && user);
 
-  // ── Session inactivity timeout (5 minutes) ──────────────────────────
-  const INACTIVITY_MS = 5 * 60 * 1000;
+  // ── Session inactivity timeout (15 minutes) ──────────────────────────
+  const INACTIVITY_MS = 15 * 60 * 1000;
   const inactivityTimer = useRef(null);
 
   const resetInactivityTimer = useCallback(() => {

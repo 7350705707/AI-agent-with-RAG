@@ -37,3 +37,10 @@ export const updateSubmissionQuestions = (submissionId, questions) =>
     method: 'PATCH',
     body: JSON.stringify({ questions }),
   });
+
+/** Creator resubmits a sent_back submission with updated questions and a new approval chain. */
+export const resubmitForApproval = (submissionId, questions, stages) =>
+  request(`/approval/${submissionId}/resubmit`, {
+    method: 'POST',
+    body: JSON.stringify({ questions, stages }),
+  });

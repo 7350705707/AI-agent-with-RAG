@@ -1,54 +1,69 @@
-# EduQuest Ecosystem
+# Sarvam AI — Offline Intranet AI Platform
 
-A secure, fully-offline, multi-agent AI platform designed for intranet deployments. No data ever leaves your organisation. Runs entirely on your local network powered by LM Studio and open-source language models.
+A secure, fully-offline, multi-agent AI platform designed for intranet deployments. No data ever leaves your organisation. Runs entirely on your local network powered by **LM Studio** and open-source language models.
+
+> **Version:** 1.2.0 &nbsp;|&nbsp; **Last Updated:** June 2026 &nbsp;|&nbsp; **Backend:** FastAPI 0.136 &nbsp;|&nbsp; **Frontend:** React 18 + Vite
 
 ---
 
 ## Recent Improvements
 
-### Error Handling & Logging (May 2026)
+### Stability, Security & Features (June 2026)
 
 - **Critical bug fix** — `POST /api/chat/stream` (Classic RAG streaming endpoint) was missing its router decorator and would return HTTP 404. The endpoint is now correctly registered and functional.
-- **Database layer** (`database.py`) — all SQLite operations now wrap in `try/except` with structured `ERROR`-level logging. Connection and init failures log at `CRITICAL` level and halt server startup via `RuntimeError`, preventing silent operation with a broken database.
+- **User Profile Panel** — Users can now view their account details (username, role, assigned agents) and change their own password directly from a slide-in profile panel; password strength meter included.
+- **Approval Workflow — Resubmit with full question editing** — When an officer sends a paper back, the creator can now **add, delete, and edit** any question inline inside the same modal. Each question card exposes: a text editor, an answer field (True/False selector for T/F questions; text input for MCQ and Fill-in-the-Blank), option editors for MCQ, and a per-question delete (trash) button. An **Add question** toolbar lets the creator append blank MCQ, True/False, or Fill-in-the-Blank questions. After editing, the creator re-configures the approval stages (Add/Remove stages, up to 3, each with an officer selector) and clicks **Resubmit for Approval** — the live edited questions are sent automatically without requiring a separate save step. The backend atomically resets `status → pending`, `current_stage → 1`, replaces all approval-stage records, and updates the questions JSON.
+- **Approval Workflow enhancements** — Officers can edit individual questions before submitting an action. The `My Submissions` view groups papers by status (Pending / Approved / Sent Back) with collapsible history sections and per-question flag indicators.
+- **Database layer** (`database.py`) — all SQLite operations wrap in `try/except` with structured `ERROR`-level logging. Connection and init failures log at `CRITICAL` level and halt server startup via `RuntimeError`, preventing silent operation with a broken database.
 - **Document processing** (`utils/document_loader.py`) — parse and load errors are caught and logged at `ERROR` level. Unsupported file types raise a logged `ValueError` rather than an unhandled exception.
 - **Routers** (`conversations.py`, `analytics.py`, `llm_router.py`) — all database and LLM calls are wrapped with `try/except`; failures return structured HTTP 500/503 responses and log at `ERROR` level instead of propagating as unhandled exceptions.
 - **JWT security audit trail** (`auth.py`) — `InvalidTokenError` failures are now logged at `WARNING` with the error type, enabling detection of token tampering; expired token events are logged at `DEBUG` to reduce noise.
 - **Startup protection** (`main.py`) — `init_db()` is wrapped in `try/except`; failure logs `CRITICAL` and raises `RuntimeError` to abort startup immediately.
 - **Log noise reduction** (`utils/logger.py`) — third-party logger suppression extended to cover `passlib`, `multipart`, `langchain_core.tracers`, and `openai._base_client` in addition to the existing list.
+- **vLLM backend support** — Set `LLM_BACKEND=vllm` to route all LLM calls to a vLLM server instead of LM Studio, with configurable `VLLM_BASE_URL` and `VLLM_API_KEY`.
 
 ---
 
 ## Core Systems
 
 ### RAG AI Chat
-Conversational AI assistant grounded in your organisation's documents. Uploaded files are split into overlapping chunks, embedded with sentence-transformers, and stored in **ChromaDB** (vector store). At query time the system performs **hybrid retrieval** — combining ChromaDB semantic search with SQLite FTS5 BM25 keyword search — and fuses results using Reciprocal Rank Fusion (RRF). The top passages are injected as context into the language model, producing answers that cite the source document. Chat history is persisted per-conversation and saved as Markdown files.
+Conversational AI assistant grounded in your organisation's documents. Uploaded files are split into overlapping chunks, embedded with sentence-transformers, and stored in **ChromaDB** (vector store). At query time the system performs **hybrid retrieval** — combining ChromaDB semantic search with SQLite BM25 keyword search — and fuses results using Reciprocal Rank Fusion (RRF). The top passages are injected as context into the language model, producing answers that cite the source document. Chat history is persisted per-conversation and saved as Markdown files.
+
+### Agentic RAG Chat
+A **ReAct-style autonomous agent** where the LLM decides when and how to search. Bound with tools (`search_knowledge_base`, `expand_search_keywords`, `search_conversation_history`, `save_memory`), it iterates up to 3 times, calling tools as needed before producing a final streamed answer. Live "thinking" indicators show the user what the agent is doing during tool execution.
 
 ### Exam Paper Generator
 Generate exam papers automatically from any knowledge-base document or pasted text. Supports three formats:
 - **MCQ** — Multiple Choice Questions with four options and a letter answer key
 - **True / False** — binary statement questions
-- **Fill in the Blanks** — sentence completion questions
+- **Fill in the Blanks** — sentence completion questions (`______` markers generated directly by the LLM)
 
-Control difficulty level, number of questions per format, subject, and instructor details. Output is plain-text with a separate answer key. Generated papers enter the **Approval Workflow** before they are finalised.
+Control the number of questions per format, topic, and scope via a simple form. Output streams in real time. Generated papers enter the **Approval Workflow** before they are finalised.
 
 ### Approval Workflow
 Multi-stage approval pipeline for exam papers:
-1. An officer (exam creator) generates and submits a paper.
-2. The paper passes through one or more configured approver stages (e.g., Reviewing Officer → Commanding Officer).
-3. Each approver can **Approve** (advance to next stage) or **Send Back** with a remark.
-4. When sending back, approvers can flag **individual questions** for revision.
-5. Officers receive a **WhatsApp-style badge notification** in the sidebar when papers need their attention.
-6. Once all stages are approved the paper is locked and can be exported as PDF, DOCX (×4 shuffled sets), or JSON.
-7. The **My Submissions** view groups papers by status (Pending / Approved / Sent Back) with collapsible history sections.
-8. Officers can **delete their own pending submissions** from the My Submissions view; answers are always included in the JSON export regardless of question type.
-9. The JSON export always includes the `answer` field for every question type to support automated downstream processing.
+1. An exam creator generates a paper and clicks **Submit for Approval**, selecting up to 3 approval stages with named officers.
+2. The paper passes through each stage sequentially (e.g., Reviewing Officer → Commanding Officer).
+3. Each approver can **Approve** (advance to next stage or fully approve) or **Send Back** with a remark.
+4. When sending back, approvers can flag **individual questions** for revision with per-question markers.
+5. **Resubmit flow** — when a paper is sent back, the creator opens it in the My Submissions view and can:
+   - **Edit** any existing question's text and answer inline (text/select fields per question type).
+   - **Delete** any question using the per-card trash button (questions are auto-renumbered).
+   - **Add** new blank questions of any type (MCQ / True-False / Fill-in-the-Blank) via the Add question toolbar at the bottom of the editor.
+   - Optionally **save** intermediate edits to the server via `PATCH /questions` (not required before resubmitting).
+   - Re-configure the approval stages (change officers, add/remove stages, 1–3 stages).
+   - Click **Resubmit for Approval** — the live in-editor questions are sent automatically; the backend atomically resets `status → pending`, `current_stage → 1`, updates `questions_json`, and inserts fresh approval-stage records.
+6. Officers receive a **badge notification** in the sidebar when papers need their attention.
+7. Once all stages are approved the paper is locked and can be exported as **PDF** (×4 shuffled sets), **DOCX** (×4 shuffled sets), or **JSON** (structured, for exam clients).
+8. The **My Submissions** view groups papers by status (Pending / Approved / Sent Back) with collapsible history sections.
+9. Creators can **delete their own pending submissions**; answers are always included in the JSON export regardless of question type.
 
 ### Knowledge Base
-Upload PDF, DOCX, TXT, and other document formats to build a searchable library:
+Upload PDF, DOCX, and PPTX documents to build a searchable library:
 - Files are chunked with configurable size and overlap.
-- Each chunk is embedded and indexed into ChromaDB (vector) + SQLite FTS5 (keyword).
+- Each chunk is embedded and indexed into ChromaDB (vector) + SQLite (keyword).
 - The hybrid retriever merges both engines using RRF for best-of-both results.
-- Documents can be tagged, searched, and deleted individually.
+- Documents can be re-indexed, renamed, downloaded, searched, and deleted individually.
 - All indexing runs locally — no cloud embedding API required.
 
 ---
@@ -57,16 +72,22 @@ Upload PDF, DOCX, TXT, and other document formats to build a searchable library:
 
 | Feature | Description |
 |---|---|
-| **100% Offline** | Runs entirely on your local network. No internet required. |
-| **JWT Auth** | Secure login with HS256 JWT tokens and bcrypt password hashing. |
+| **100% Offline** | Runs entirely on your local network. No internet required at runtime. |
+| **JWT Auth** | Secure login with HS256 JWT tokens, `httpOnly` SameSite=Strict cookies, and bcrypt password hashing. |
 | **Account Approval** | New signups require admin approval before login is allowed. |
-| **User Management** | Admin panel with modal UI: create users, assign roles and agents, approve signups, reset passwords. |
-| **User Profile** | Users can view their account details and change their own password from the profile panel. |
-| **LM Studio Integration** | Connect any GGUF model via LM Studio's OpenAI-compatible local API. Swap models without restarting. |
-| **MCP Tools** | Built-in Model Context Protocol tools: `get_current_date`, `save_task_memory`, and more. |
-| **Streaming Responses** | Chat uses Server-Sent Events (SSE) for real-time streamed token output. |
-| **Conversation History** | All chats saved as Markdown files with searchable history in the sidebar. |
-| **Windows Service** | Optional deployment as a Windows Service with IIS reverse-proxy (HTTPS). |
+| **User Management** | Admin panel: create users, assign roles and per-agent permissions, approve signups, reset passwords. |
+| **User Profile Panel** | Users can view account details (username, role, assigned agents) and change their own password with a strength meter. |
+| **LM Studio Integration** | Connect any GGUF model via LM Studio's OpenAI-compatible local API. Swap models live without restarting. |
+| **vLLM Backend** | Optional vLLM backend — set `LLM_BACKEND=vllm` to route all LLM calls to a vLLM server. |
+| **MCP Tools** | Built-in Model Context Protocol server at `/mcp` exposing `expand_keywords` and other tools. |
+| **Streaming Responses** | Chat uses Server-Sent Events (SSE) for real-time streamed token output with AbortController cancellation. |
+| **Conversation History** | All chats persisted as Markdown files with searchable history in the sidebar; cross-conversation Jaccard search. |
+| **User Memory** | The AI extracts and remembers personal facts (name, role, location) across sessions via background thread + SQLite. |
+| **Analytics Dashboard** | Per-user and platform-wide usage statistics — total messages, breakdown by agent type, top active users. |
+| **Audit Log** | Tamper-evident security event log (logins, uploads, admin actions) with 90-day retention. |
+| **Global Rate Limiting** | Per-IP rate limiter (120 req / 60 s) protecting all endpoints; separate auth/signup rate limits. |
+| **Windows Service** | Optional deployment as a Windows Service with IIS reverse-proxy (HTTPS) via `win_service.py`. |
+| **Docker** | Single-container and Docker Compose deployment options with persistent volume mounts. |
 
 ---
 
@@ -74,15 +95,17 @@ Upload PDF, DOCX, TXT, and other document formats to build a searchable library:
 
 | Layer | Technology |
 |---|---|
-| Frontend | React 18 + Vite + Tailwind CSS |
-| Backend | Python FastAPI |
-| Database | SQLite (WAL mode) + FTS5 |
-| Vector Store | ChromaDB (local) |
-| LLM Runtime | LM Studio (local GGUF models) |
-| AI Framework | LangChain |
-| Search | Hybrid: BM25 (FTS5) + Vector (ChromaDB) via RRF |
-| Authentication | JWT (HS256) + bcrypt |
+| Frontend | React 18 + Vite 5 + Tailwind CSS 3 |
+| Backend | Python FastAPI 0.136 + Uvicorn 0.44 |
+| Database | SQLite (WAL mode) |
+| Vector Store | ChromaDB 1.5.8 (local, persistent) |
+| LLM Runtime | LM Studio (local GGUF models) or vLLM |
+| Embeddings | LM Studio `/v1/embeddings` (ONNX fallback: all-MiniLM-L6-v2) |
+| AI Framework | LangChain 1.2 + LangChain-Community 0.4 |
+| Search | Hybrid: BM25 keyword + Vector semantic via RRF |
+| Authentication | JWT HS256 + bcrypt + httpOnly cookies |
 | Streaming | Server-Sent Events (SSE) |
+| MCP | mcp[cli] ≥ 1.27 |
 | Deployment | Windows Service / IIS (HTTPS) / Docker |
 
 ---
@@ -97,7 +120,17 @@ cd backend
 pip install -r requirements.txt
 python run.py
 
-# Frontend
+# Frontend (development)
+cd frontend
+npm install
+npm run dev
+```
+
+Default admin credentials are set during first-run database initialisation (see `backend/app/database.py`).
+
+- Backend API: `http://localhost:8000`
+- Frontend dev server: `http://localhost:5173`
+- Swagger UI (debug mode): `http://localhost:8000/docs`
 cd frontend
 npm install
 npm run dev
@@ -195,17 +228,18 @@ All components run **fully offline** — zero external API calls at runtime.
 | **General Chat Agent** | Conversational AI with streaming responses, cross-conversation memory, and hybrid RAG citations |
 | **Agentic RAG Chat** | ReAct-style tool-calling loop where the LLM autonomously decides when to search the knowledge base |
 | **Exam Generator** | Configurable MCQ / True-False / Fill-in-the-Blank exam papers streamed in real time |
+| **Approval Workflow** | Multi-stage exam paper approval with per-question flagging; full resubmit flow — add, delete, or edit questions inline (with answer fields), re-configure stages, then resubmit in one click; PDF/DOCX/JSON export |
 | **KB Semantic Search** | Direct vector search over uploaded documents with ranked, cited results |
 | **Knowledge Base** | Upload, index, rename, download, and delete PDF / DOCX / PPTX documents |
 | **Analytics Dashboard** | Per-user and platform-wide usage statistics (admin gets full view) |
-| **Admin Panel** | Create users, assign roles, configure agent access, reset passwords |
+| **Admin Panel** | Create users, assign roles, configure agent access, approve signups, reset passwords |
+| **User Profile Panel** | View account details and change own password with live strength indicator |
 | **User Memory** | The AI remembers personal facts (name, role, location) across sessions |
 | **Model Selector** | Switch the active LLM model in LM Studio directly from the UI |
 | **vLLM Backend** | Optional vLLM backend in addition to LM Studio — toggle via `LLM_BACKEND` env var |
 | **JWT Authentication** | Secure login / signup with `httpOnly` SameSite=Strict cookies + Bearer token fallback |
-| **Approval Workflow** | Multi-stage exam paper approval with per-question flagging; officers can delete pending submissions |
 | **Audit Log** | Tamper-evident security event log (logins, uploads, admin actions) |
-| **Fully Offline** | No internet dependency — ships with offline install scripts |
+| **Fully Offline** | No internet dependency — ships with offline install scripts for Windows, Linux, and macOS |
 
 ---
 
@@ -215,27 +249,27 @@ All components run **fully offline** — zero external API calls at runtime.
 
 | Layer | Technology | Version |
 |---|---|---|
-| Web framework | FastAPI + Uvicorn | 0.136 / 0.44 |
-| LLM inference | LM Studio (OpenAI-compatible REST) | any |
+| Web framework | FastAPI + Uvicorn | 0.136.0 / 0.44.0 |
+| LLM inference | LM Studio (OpenAI-compatible REST) or vLLM | any |
 | Vector store | ChromaDB | 1.5.8 |
-| Embeddings | LM Studio `/v1/embeddings` (or ONNX fallback) | — |
+| Embeddings | LM Studio `/v1/embeddings` (ONNX fallback: all-MiniLM-L6-v2) | — |
 | Relational store | SQLite via `sqlite-utils` | 3.39 |
-| LLM orchestration | LangChain + LangChain-Community | 1.2 / 0.4 |
-| Document parsing | PyPDF, Docx2txt, python-pptx, unstructured | latest |
-| Authentication | PyJWT + bcrypt | 2.12 / 5.0 |
-| MCP tooling | mcp[cli] | ≥ 1.27 |
-| Data validation | Pydantic | 2.13 |
+| LLM orchestration | LangChain + LangChain-Community | 1.2.15 / 0.4.1 |
+| Document parsing | PyPDF, Docx2txt, python-pptx, unstructured | 6.10.2 / 0.9 / 1.0.2 / 0.22.21 |
+| Authentication | PyJWT + bcrypt | 2.12.1 / 5.0.0 |
+| MCP tooling | mcp[cli] | ≥ 1.27.0 |
+| Data validation | Pydantic | 2.13.2 |
 
 ### Frontend
 
 | Layer | Technology | Version |
 |---|---|---|
-| UI framework | React | 18.3 |
-| Build tool | Vite + @vitejs/plugin-react | 5.4 |
-| Styling | Tailwind CSS + Typography plugin | 3.4 |
+| UI framework | React | 18.3.1 |
+| Build tool | Vite + @vitejs/plugin-react | 5.4 / 4.3 |
+| Styling | Tailwind CSS + Typography plugin | 3.4.10 |
 | Icons | Lucide React | 0.400 |
-| Markdown rendering | react-markdown + remark-gfm + remark-breaks + rehype-raw | 9.0 |
-| HTTP / Streaming | Native Fetch API + EventSource (SSE) | — |
+| Markdown rendering | react-markdown + remark-gfm + remark-breaks + rehype-raw | 9.0.1 |
+| HTTP / Streaming | Native Fetch API + ReadableStream (SSE) | — |
 
 ---
 
@@ -250,7 +284,7 @@ Model-AI/
 │   │   ├── auth.py                 # JWT creation, password hashing, FastAPI deps
 │   │   ├── database.py             # SQLite helpers — users, convs, messages, analytics
 │   │   ├── chroma_store.py         # ChromaDB vector store — index, search, health check
-│   │   ├── llm.py                  # LM Studio client factory + model management
+│   │   ├── llm.py                  # LM Studio / vLLM client factory + model management
 │   │   ├── models.py               # Pydantic request/response schemas
 │   │   ├── mcp_server.py           # MCP tool server (keyword expansion)
 │   │   ├── agents/
@@ -258,13 +292,14 @@ Model-AI/
 │   │   │   ├── agentic_rag.py      # ReAct tool-calling loop (autonomous agent)
 │   │   │   └── exam_agent.py       # Structured exam paper generator
 │   │   ├── routers/
-│   │   │   ├── auth.py             # /api/auth/* — login, signup, /me
+│   │   │   ├── auth.py             # /api/auth/* — login, signup, /me, logout
 │   │   │   ├── chat.py             # /api/chat/* + /api/agentic-chat/*
 │   │   │   ├── conversations.py    # /api/conversations/*
 │   │   │   ├── exam.py             # /api/exam/*
 │   │   │   ├── knowledge.py        # /api/knowledge/*
 │   │   │   ├── admin.py            # /api/admin/* (admin-only)
 │   │   │   ├── analytics.py        # /api/analytics/*
+│   │   │   ├── approval.py         # /api/approval/* (exam approval workflow)
 │   │   │   ├── files.py            # /api/files/* (per-conversation uploads)
 │   │   │   └── llm_router.py       # /api/llm/* (model list & switch)
 │   │   └── utils/
@@ -280,13 +315,12 @@ Model-AI/
 │   ├── knowledge_files/            # Permanent uploaded knowledge documents
 │   ├── uploads/                    # Temporary per-conversation file uploads
 │   ├── chroma_db/                  # ChromaDB persistent vector store
-│   ├── history/                    # Chat history markdown files + user_facts/
+│   ├── history/                    # Chat history markdown files
 │   ├── logs/                       # Rotating app logs + audit.log
 │   ├── packages/                   # Optional: pip wheels for offline install
 │   ├── requirements.txt            # Python dependencies (pinned versions)
 │   ├── run.py                      # Uvicorn launcher (entry point)
-│   ├── win_service.py              # Windows Service wrapper (NSSM-compatible)
-│   └── Dockerfile
+│   └── win_service.py              # Windows Service wrapper (NSSM-compatible)
 ├── frontend/
 │   ├── src/
 │   │   ├── main.jsx                # React DOM entry point
@@ -302,15 +336,18 @@ Model-AI/
 │   │   │   ├── admin.js            # listUsers(), createUser(), updateUser(), etc.
 │   │   │   ├── analytics.js        # getAnalyticsSummary(), getMyAnalytics()
 │   │   │   ├── models.js           # listModels(), setActiveModel()
+│   │   │   ├── approval.js         # Approval workflow API calls incl. resubmitForApproval()
 │   │   │   └── index.js            # Barrel re-export of all services
 │   │   ├── views/                  # Full-page view components
 │   │   │   ├── GeneralChatPanel.jsx  # Agentic RAG chat interface
 │   │   │   ├── ChatPanel.jsx         # Classic hybrid RAG chat
 │   │   │   ├── ExamPanel.jsx         # Exam paper generator UI
+│   │   │   ├── ApprovalPanel.jsx     # Exam approval workflow (submit/review/sendback/edit-add-delete-questions/resubmit)
 │   │   │   ├── KnowledgePanel.jsx    # Knowledge base document manager
 │   │   │   ├── SearchPanel.jsx       # Direct KB semantic search
 │   │   │   ├── AnalyticsPanel.jsx    # Usage analytics dashboard
 │   │   │   ├── AdminPanel.jsx        # User management (admin only)
+│   │   │   ├── UserProfilePanel.jsx  # Account details + change password (slide-in)
 │   │   │   ├── AboutPage.jsx         # Project info and version details
 │   │   │   └── LoginPage.jsx         # Login / signup forms
 │   │   └── components/             # Shared UI components
@@ -323,12 +360,13 @@ Model-AI/
 │   ├── vite.config.js              # Dev proxy: /api → backend:8000
 │   ├── tailwind.config.js
 │   └── postcss.config.js
-├── docker-compose.yml
-├── Dockerfile
+├── docker-compose.yml              # Single-container compose with volume mounts
+├── Dockerfile                      # Python 3.12-slim image (backend + frontend build)
 ├── deploy-offline.ps1              # Windows offline deployment script
 ├── deploy-offline.sh               # Linux offline deployment script
 ├── deploy-offline-macos.sh         # macOS offline deployment script
 ├── export-for-offline.ps1          # Exports pip wheels + npm cache for air-gap
+├── mcp-config.json                 # MCP server configuration
 ├── DEPLOYMENT.md
 └── README.md
 ```
@@ -346,7 +384,7 @@ Model-AI/
 - Enables **CORS** with configurable allowed origins (intranet-safe defaults).
 - Applies a **global per-IP rate limiter** (120 requests / 60 seconds) using a thread-safe in-process store — protects against accidental or intentional flooding.
 - Mounts an **MCP authentication middleware** that requires a Bearer token on `/mcp` when `MCP_SECRET_KEY` is set.
-- Registers all domain **routers** (auth, chat, conversations, exam, knowledge, admin, analytics, files, llm).
+- Registers all domain **routers** (auth, chat, conversations, exam, knowledge, admin, analytics, approval, files, llm).
 - Mounts the **MCP server** at `/mcp` for tool calls.
 - Serves the **React production build** as static files at `/` so one process serves both the API and the SPA.
 - Calls `init_db()` on startup to create all SQLite tables.
@@ -435,8 +473,25 @@ Security measures in place:
 | `knowledge_documents` | Metadata for uploaded knowledge base files |
 | `user_memories` | Per-user AI-extracted personal facts (key/value) |
 | `analytics_events` | Usage events (agent type, message length, timestamp) |
+| `exam_submissions` | Submitted exam papers with questions, header, status, stage tracking |
+| `approval_stages` | Per-stage records (officer, status, remark, actioned_at) for each submission |
+| `exam_structured_questions` | Latest parsed question set per conversation (for exam agent persistence) |
 
 `init_db()` creates all tables on first run using `CREATE TABLE IF NOT EXISTS`.
+
+**Key approval DB functions:**
+
+| Function | Description |
+|---|---|
+| `submit_exam_for_approval` | Creates the submission + all stage records atomically |
+| `get_submission_full` | Returns submission with nested stages list |
+| `update_submission_questions` | Owner or officer edits questions; admin can edit any submission |
+| `process_approval_action` | Officer approves or sends back; advances `current_stage` or sets `status=sent_back` |
+| `resubmit_for_approval` | Creator resets a `sent_back` submission to `pending` with a fully-updated questions JSON and a fresh approval chain (deletes old stages, inserts new ones atomically); accepts live in-editor questions directly — no prior save required |
+| `list_my_submissions` | All submissions by a given creator |
+| `list_pending_for_officer` | Submissions where the officer is assigned to the current pending stage |
+| `list_processed_by_officer` | Submissions the officer has already actioned |
+| `delete_submission` | Creator deletes a `pending` submission only |
 
 All database functions wrap their SQLite calls in `try/except` blocks and log failures at `ERROR` level (or `CRITICAL` for connection errors) before propagating. A `CRITICAL`-level log from `init_db()` during startup causes the server to halt immediately via `RuntimeError`, preventing the application from running in a broken state with no database.
 
@@ -452,7 +507,14 @@ All database functions wrap their SQLite calls in `try/except` blocks and log fa
 - `ensure_embedding_model_loaded()` — if `EMBEDDING_MODEL` is set, automatically loads it in LM Studio at startup before the first embedding request.
 - `is_no_model_error(exception)` / `is_context_size_error(exception)` — classify LLM error responses so agents can surface useful messages to the user.
 
-Set `LLM_BACKEND=vllm` and configure `VLLM_BASE_URL` / `VLLM_API_KEY` to use a vLLM server instead of LM Studio.
+**LLM Backend selection:**
+
+| `LLM_BACKEND` | Endpoint used | Notes |
+|---|---|---|
+| `lmstudio` (default) | `LM_STUDIO_BASE_URL` (`http://localhost:1234/v1`) | Best for local GGUF model development |
+| `vllm` | `VLLM_BASE_URL` (`http://localhost:8080/v1`) | Use with GPU servers for higher throughput |
+
+Set `LLM_BACKEND=vllm` and configure `VLLM_BASE_URL` / `VLLM_API_KEY` to use a vLLM server instead of LM Studio. Embeddings always use LM Studio unless `LM_STUDIO_BASE_URL` is also pointed at the vLLM server.
 
 ---
 
@@ -530,13 +592,14 @@ All routers live in `app/routers/` and are registered with an `/api/` prefix. Ev
 
 | Router | Prefix | Purpose |
 |---|---|---|
-| `auth.py` | `/api/auth` | Login, signup, current user |
+| `auth.py` | `/api/auth` | Login, signup, current user, logout |
 | `chat.py` | `/api/chat`, `/api/agentic-chat` | Classic RAG and agentic streaming chat |
 | `conversations.py` | `/api/conversations` | CRUD for conversation sessions and message history |
 | `exam.py` | `/api/exam` | Exam paper generation (streaming and non-streaming) |
 | `knowledge.py` | `/api/knowledge` | Document upload, indexing, list, delete, download, search |
 | `admin.py` | `/api/admin` | User management (admin only) |
 | `analytics.py` | `/api/analytics` | Platform summary and per-user usage stats |
+| `approval.py` | `/api/approval` | Exam paper approval workflow (submit, review, sendback, export) |
 | `files.py` | `/api/files` | Per-conversation temporary file uploads |
 | `llm_router.py` | `/api/llm` | List models, switch active model in LM Studio |
 
@@ -621,6 +684,7 @@ All API communication is centralised in `src/services/`. Each module uses the `r
 | `admin.js` | `listUsers()`, `createUser()`, `updateUser()`, `deleteUser()`, `resetPassword()` |
 | `analytics.js` | `getAnalyticsSummary()`, `getMyAnalytics()` |
 | `models.js` | `listModels()`, `setActiveModel(modelId)` |
+| `approval.js` | `getApprovalOfficers()`, `submitExamForApproval(examId, questions, stages)`, `getMySubmissions()`, `getPendingReviews()`, `getApprovalHistory()`, `getSubmission(id)`, `submitApprovalAction(id, action, remark)`, `deleteSubmission(id)`, `updateSubmissionQuestions(id, questions)`, `resubmitForApproval(id, questions, stages)` — `questions` may be the live in-editor array (unsaved) |
 
 `src/api.js` is retained for backward compatibility with older component imports.
 
@@ -651,6 +715,28 @@ Form-driven exam generation UI:
 - **Fill-in-the-Blank** blanks are produced by the LLM using `______` markers; no post-processing occurs in the frontend.
 - Structured questions received via the `structured` SSE event are persisted in **`sessionStorage`** (tab-scoped, auto-cleared on tab close) rather than `localStorage`.
 - **Download as `.txt`** button appears once generation is complete.
+
+#### `ApprovalPanel.jsx`
+Full exam approval workflow UI (~1 000 lines). Contains two sub-components:
+
+**`SubmissionModal`** — per-submission detail modal used by both creators and officers:
+- Displays the paper header, all questions with answer keys, and the full approval-stages timeline (officer name, status, remark, actioned date).
+- **Officer actions** — Approve or Send Back with an optional remark; per-question flag markers can be toggled before sending back.
+- **Creator edit mode** — the original creator can toggle edit mode to:
+  - Edit any question's text and answer (answer field type adapts per question: True/False select, MCQ/Fill-blank text input).
+  - Add new blank questions of any type via the **Add question** toolbar (MCQ / True/False / Fill Blank buttons).
+  - Delete any question using the per-card trash button; remaining questions are auto-renumbered.
+  - Save edits to the server at any point via `PATCH /questions`.
+- **Resubmit flow (sent-back papers only)** — when `status === 'sent_back'` and the viewer is the creator, a resubmit panel appears below the question editor:
+  - Loads eligible officers via `GET /api/approval/officers`.
+  - Renders a per-stage officer selector (Add/Remove stages, 1–3 stages).
+  - An info banner confirms that any live (unsaved) edits will be included automatically.
+  - **Resubmit for Approval** button is active even while the question editor is open; it calls `POST /api/approval/{id}/resubmit` with the current in-editor questions and new stage configuration, then refreshes the submissions list.
+
+**Main panel** — tabbed view (`My Submissions` / `Pending Review` / `History`):
+- `My Submissions` — grouped by status (Pending / Approved / Sent Back); badge count for pending items; PDF/DOCX/JSON export buttons on approved papers.
+- `Pending Review` — officer queue; each card shows current stage, submitter, and date; opens `SubmissionModal` with approve/send-back actions.
+- `History` — papers the current user has already actioned (officer history view).
 
 #### `KnowledgePanel.jsx`
 Knowledge base document manager:
@@ -820,12 +906,16 @@ Event types emitted by the backend:
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| POST | `/api/approval/submit` | Bearer | Submit an exam paper for approval |
-| GET | `/api/approval/pending` | Bearer | List papers pending review by the current approver |
-| POST | `/api/approval/approve/{id}` | Bearer | Approve a submission (advance to next stage) |
-| POST | `/api/approval/sendback/{id}` | Bearer | Send a paper back with remarks / flagged questions |
+| GET | `/api/approval/officers` | Bearer | List users who have the `approval` agent (eligible officers) |
+| POST | `/api/approval/submit` | Bearer | Submit an exam paper for multi-stage approval |
 | GET | `/api/approval/my-submissions` | Bearer | List papers submitted by the current user |
-| DELETE | `/api/approval/my-submissions/{id}` | Bearer | Delete a pending submission (officer only) |
+| GET | `/api/approval/pending` | Bearer | List papers pending review by the current user (officer queue) |
+| GET | `/api/approval/history` | Bearer | List papers already reviewed by the current user (officer history) |
+| GET | `/api/approval/{id}` | Bearer | Full submission detail (creator, assigned officers, or admin) |
+| DELETE | `/api/approval/{id}` | Bearer | Creator deletes their own pending submission |
+| POST | `/api/approval/{id}/action` | Bearer | Officer approves or sends back; body: `{ action, remark }` |
+| PATCH | `/api/approval/{id}/questions` | Bearer | Owner or officer updates the questions of a submission |
+| POST | `/api/approval/{id}/resubmit` | Bearer | Creator resubmits a `sent_back` paper with edited questions and a fresh approval chain; body: `{ questions, stages }` |
 
 ### Analytics — `/api/analytics`
 

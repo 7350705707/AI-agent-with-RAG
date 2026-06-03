@@ -28,6 +28,8 @@ import {
   submitApprovalAction,
   deleteSubmission,
   updateSubmissionQuestions,
+  resubmitForApproval,
+  getApprovalOfficers,
 } from '../api';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -212,7 +214,7 @@ function exportApprovalJson(questions, title, header = {}) {
 
 // ── Submission Detail / Review Modal ─────────────────────────────────────
 
-function SubmissionModal({ submission, isOfficer, currentUserId, onClose, onAction }) {
+function SubmissionModal({ submission, isOfficer, currentUserId, onClose, onAction, onResubmit }) {
   const [action, setAction] = useState('');
   const [remark, setRemark] = useState('');
   const [saving, setSaving] = useState(false);
@@ -224,6 +226,25 @@ function SubmissionModal({ submission, isOfficer, currentUserId, onClose, onActi
   const [editedQuestions, setEditedQuestions] = useState([]);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState('');
+  // resubmit flow (sent_back owner only)
+  const [officers, setOfficers] = useState([]);
+  const [officersLoading, setOfficersLoading] = useState(false);
+  const [resubmitStages, setResubmitStages] = useState([{ officer_id: '' }]);
+  const [resubmitting, setResubmitting] = useState(false);
+  const [resubmitError, setResubmitError] = useState('');
+
+  const isSentBack = submission.status === 'sent_back';
+  const isOwner = submission.created_by === currentUserId;
+
+  // Load officers when a sent_back owner opens this modal
+  useEffect(() => {
+    if (!isSentBack || !isOwner) return;
+    setOfficersLoading(true);
+    getApprovalOfficers()
+      .then((data) => setOfficers(data))
+      .catch(() => setOfficers([]))
+      .finally(() => setOfficersLoading(false));
+  }, [isSentBack, isOwner]);
 
   const toggleQReject = (num) => {
     setRejectedQs((prev) => {
@@ -256,16 +277,16 @@ function SubmissionModal({ submission, isOfficer, currentUserId, onClose, onActi
   const { questions = [], header = {}, stages = [] } = submission;
   const isFullyApproved = submission.status === 'approved';
   const isPending = submission.status === 'pending';
-  const isSentBack = submission.status === 'sent_back';
+  // isSentBack and isOwner are declared above (needed for useEffect)
 
   // Can this user take action? They must be the current stage's officer and status=pending
   const currentStageData = stages.find((s) => s.stage_number === submission.current_stage);
   const canAct = isOfficer && isPending && currentStageData?.status === 'pending';
 
   // Can this user edit questions?
-  const isOwner = !isOfficer || submission.created_by === currentUserId;
+  const canEditOwner = !isOfficer || submission.created_by === currentUserId;
   const canEdit = !isFullyApproved && (
-    (isOwner && (isPending || isSentBack)) ||
+    (canEditOwner && (isPending || isSentBack)) ||
     canAct
   );
 
@@ -308,6 +329,25 @@ function SubmissionModal({ submission, isOfficer, currentUserId, onClose, onActi
         const opts = q.options.filter((_, j) => j !== oIdx);
         return { ...q, options: opts };
       })
+    );
+  };
+
+  const addQuestion = (type) => {
+    setEditedQuestions((prev) => {
+      const nextNum = prev.length + 1;
+      const blank =
+        type === 'mcq'
+          ? { number: nextNum, type: 'mcq', stem: '', options: ['', '', '', ''], answer: '' }
+          : type === 'true_false'
+          ? { number: nextNum, type: 'true_false', text: '', answer: 'True' }
+          : { number: nextNum, type: 'fill_blank', text: '', answer: '' };
+      return [...prev, blank];
+    });
+  };
+
+  const removeQuestion = (idx) => {
+    setEditedQuestions((prev) =>
+      prev.filter((_, i) => i !== idx).map((q, i) => ({ ...q, number: i + 1 }))
     );
   };
 
@@ -494,57 +534,120 @@ function SubmissionModal({ submission, isOfficer, currentUserId, onClose, onActi
 
               {/* Edit mode */}
               {editMode && (
-                <div className="space-y-3 max-h-80 overflow-y-auto rounded-xl border border-amber-200 p-3 bg-amber-50/40">
-                  {editedQuestions.map((q, idx) => (
-                    <div key={idx} className="bg-white border border-slate-200 rounded-xl px-4 py-3 space-y-2">
-                      <div className="flex items-start gap-2">
-                        <span className="shrink-0 text-xs font-semibold text-slate-400 mt-2">{q.number ?? idx + 1}.</span>
-                        <textarea
-                          rows={2}
-                          value={q.text || q.stem || q.question || ''}
-                          onChange={(e) => updateEditQ(idx, q.text !== undefined ? 'text' : q.stem !== undefined ? 'stem' : 'question', e.target.value)}
-                          className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-amber-400 resize-none transition"
-                          placeholder="Question text"
-                        />
-                      </div>
-                      {q.type === 'mcq' && q.options !== undefined && (
-                        <div className="ml-6 space-y-1.5">
-                          <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Options</p>
-                          {(q.options || []).map((opt, oIdx) => (
-                            <div key={oIdx} className="flex items-center gap-2">
-                              <span className="shrink-0 text-xs text-slate-400 w-5 text-right">{String.fromCharCode(65 + oIdx)}.</span>
-                              <input
-                                type="text"
-                                value={opt}
-                                onChange={(e) => updateEditOption(idx, oIdx, e.target.value)}
-                                className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-amber-400 transition"
-                                placeholder={`Option ${String.fromCharCode(65 + oIdx)}`}
-                              />
-                              {(q.options || []).length > 2 && (
-                                <button
-                                  type="button"
-                                  onClick={() => removeOption(idx, oIdx)}
-                                  className="shrink-0 p-1 text-slate-400 hover:text-red-500 transition"
-                                  title="Remove option"
-                                >
-                                  <MinusCircle size={14} />
-                                </button>
-                              )}
-                            </div>
-                          ))}
-                          {(q.options || []).length < 6 && (
+                <div className="space-y-3 rounded-xl border border-amber-200 p-3 bg-amber-50/40">
+                  <div className="space-y-3 max-h-80 overflow-y-auto">
+                    {editedQuestions.map((q, idx) => (
+                      <div key={idx} className="bg-white border border-slate-200 rounded-xl px-4 py-3 space-y-2">
+                        <div className="flex items-start gap-2">
+                          <span className="shrink-0 text-xs font-semibold text-slate-400 mt-2">{idx + 1}.</span>
+                          <textarea
+                            rows={2}
+                            value={q.text || q.stem || q.question || ''}
+                            onChange={(e) => updateEditQ(idx, q.text !== undefined ? 'text' : q.stem !== undefined ? 'stem' : 'question', e.target.value)}
+                            className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:border-amber-400 resize-none transition"
+                            placeholder="Question text"
+                          />
+                          {isOwner && (
                             <button
                               type="button"
-                              onClick={() => addOption(idx)}
-                              className="flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-500 mt-1 transition"
+                              onClick={() => removeQuestion(idx)}
+                              className="shrink-0 p-1 text-slate-300 hover:text-red-500 transition mt-1"
+                              title="Remove question"
                             >
-                              <PlusCircle size={13} /> Add option
+                              <Trash2 size={14} />
                             </button>
                           )}
                         </div>
-                      )}
+                        {q.type === 'mcq' && q.options !== undefined && (
+                          <div className="ml-6 space-y-1.5">
+                            <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Options</p>
+                            {(q.options || []).map((opt, oIdx) => (
+                              <div key={oIdx} className="flex items-center gap-2">
+                                <span className="shrink-0 text-xs text-slate-400 w-5 text-right">{String.fromCharCode(65 + oIdx)}.</span>
+                                <input
+                                  type="text"
+                                  value={opt}
+                                  onChange={(e) => updateEditOption(idx, oIdx, e.target.value)}
+                                  className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-amber-400 transition"
+                                  placeholder={`Option ${String.fromCharCode(65 + oIdx)}`}
+                                />
+                                {(q.options || []).length > 2 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => removeOption(idx, oIdx)}
+                                    className="shrink-0 p-1 text-slate-400 hover:text-red-500 transition"
+                                    title="Remove option"
+                                  >
+                                    <MinusCircle size={14} />
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                            {(q.options || []).length < 6 && (
+                              <button
+                                type="button"
+                                onClick={() => addOption(idx)}
+                                className="flex items-center gap-1 text-xs text-emerald-600 hover:text-emerald-500 mt-1 transition"
+                              >
+                                <PlusCircle size={13} /> Add option
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        {q.type === 'true_false' && (
+                          <div className="ml-6">
+                            <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider mb-1">Answer</p>
+                            <select
+                              value={q.answer || 'True'}
+                              onChange={(e) => updateEditQ(idx, 'answer', e.target.value)}
+                              className="bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-amber-400 transition"
+                            >
+                              <option value="True">True</option>
+                              <option value="False">False</option>
+                            </select>
+                          </div>
+                        )}
+                        {(q.type === 'mcq' || q.type === 'fill_blank') && (
+                          <div className="ml-6">
+                            <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider mb-1">Answer</p>
+                            <input
+                              type="text"
+                              value={q.answer || ''}
+                              onChange={(e) => updateEditQ(idx, 'answer', e.target.value)}
+                              className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-amber-400 transition"
+                              placeholder={q.type === 'mcq' ? 'e.g. A' : 'Correct answer'}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  {isOwner && (
+                    <div className="flex items-center gap-2 pt-2 border-t border-amber-200">
+                      <span className="text-xs text-slate-500 shrink-0">Add question:</span>
+                      <button
+                        type="button"
+                        onClick={() => addQuestion('mcq')}
+                        className="flex items-center gap-1 text-xs px-2.5 py-1 bg-white border border-blue-200 text-blue-600 rounded-lg hover:bg-blue-50 transition"
+                      >
+                        <PlusCircle size={12} /> MCQ
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => addQuestion('true_false')}
+                        className="flex items-center gap-1 text-xs px-2.5 py-1 bg-white border border-violet-200 text-violet-600 rounded-lg hover:bg-violet-50 transition"
+                      >
+                        <PlusCircle size={12} /> True/False
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => addQuestion('fill_blank')}
+                        className="flex items-center gap-1 text-xs px-2.5 py-1 bg-white border border-emerald-200 text-emerald-600 rounded-lg hover:bg-emerald-50 transition"
+                      >
+                        <PlusCircle size={12} /> Fill Blank
+                      </button>
                     </div>
-                  ))}
+                  )}
                 </div>
               )}
             </div>
@@ -658,11 +761,114 @@ function SubmissionModal({ submission, isOfficer, currentUserId, onClose, onActi
             </div>
           )}
 
-          {/* Sent-back notice for submitters */}
-          {isSentBack && !isOfficer && (
-            <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
-              <div className="flex items-center gap-2 font-medium mb-1"><XCircle size={14} /> This paper was sent back</div>
-              <p className="text-xs text-red-600">Please review the officer remarks above, regenerate the exam, and submit again.</p>
+          {/* Resubmit panel for the original creator of a sent_back submission */}
+          {isSentBack && isOwner && (
+            <div className="rounded-xl border border-orange-200 bg-orange-50 p-4 space-y-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-orange-700">
+                <XCircle size={15} /> This paper was sent back — you can edit the questions above, then resubmit below.
+              </div>
+
+              {/* Approval stage selector */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-medium text-slate-600">Approval Stages (max 3)</p>
+                  {resubmitStages.length < 3 && (
+                    <button
+                      type="button"
+                      onClick={() => setResubmitStages((s) => [...s, { officer_id: '' }])}
+                      className="text-xs text-blue-600 hover:text-blue-800 transition"
+                    >
+                      + Add Stage
+                    </button>
+                  )}
+                </div>
+                <div className="space-y-2">
+                  {resubmitStages.map((stage, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 text-xs font-bold flex items-center justify-center shrink-0">
+                        {idx + 1}
+                      </div>
+                      {officersLoading ? (
+                        <span className="flex items-center gap-1.5 text-xs text-slate-400">
+                          <Loader2 size={12} className="animate-spin" /> Loading officers…
+                        </span>
+                      ) : (
+                        <select
+                          value={stage.officer_id}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setResubmitStages((prev) => prev.map((s, i) => i === idx ? { ...s, officer_id: val } : s));
+                          }}
+                          className="flex-1 bg-white border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400"
+                        >
+                          <option value="">— Select Officer —</option>
+                          {officers.map((o) => (
+                            <option key={o.id} value={o.id}>{o.username}</option>
+                          ))}
+                        </select>
+                      )}
+                      {resubmitStages.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => setResubmitStages((s) => s.filter((_, i) => i !== idx))}
+                          className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 transition"
+                          title="Remove stage"
+                        >
+                          <X size={13} />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {!officersLoading && officers.length === 0 && (
+                  <p className="text-xs text-amber-600 mt-2">
+                    No approval officers found. Ask an admin to assign the "approval" agent to a user.
+                  </p>
+                )}
+              </div>
+
+              {resubmitError && (
+                <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                  {resubmitError}
+                </p>
+              )}
+
+              {editMode && (
+                <p className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                  Your unsaved question edits will be included automatically when you resubmit.
+                </p>
+              )}
+
+              <button
+                type="button"
+                disabled={resubmitting || resubmitStages.some((s) => !s.officer_id)}
+                onClick={async () => {
+                  if (resubmitStages.some((s) => !s.officer_id)) {
+                    setResubmitError('Please assign an officer to every stage.');
+                    return;
+                  }
+                  setResubmitting(true);
+                  setResubmitError('');
+                  try {
+                    const finalQuestions = editMode ? editedQuestions : questions;
+                    await resubmitForApproval(
+                      submission.id,
+                      finalQuestions,
+                      resubmitStages.map((s) => ({ officer_id: s.officer_id })),
+                    );
+                    onResubmit?.();
+                    onClose();
+                  } catch (err) {
+                    setResubmitError(err.message || 'Resubmit failed');
+                  } finally {
+                    setResubmitting(false);
+                  }
+                }}
+                className="w-full flex items-center justify-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition"
+              >
+                {resubmitting ? <Loader2 size={14} className="animate-spin" /> : <ChevronRight size={14} />}
+                Resubmit for Approval
+              </button>
             </div>
           )}
         </div>
@@ -951,6 +1157,7 @@ export default function ApprovalPanel({ user }) {
           currentUserId={user?.id || user?.sub}
           onClose={() => setSelected(null)}
           onAction={handleAction}
+          onResubmit={async () => { setSelected(null); await load(); }}
         />
       )}
     </div>

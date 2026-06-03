@@ -1079,3 +1079,59 @@ def update_submission_questions(
     conn.close()
     return result
 
+
+def resubmit_for_approval(
+    submission_id: str,
+    user_id: str,
+    questions: list,
+    stages: list[dict],  # [{"officer_id": str, "officer_name": str}, ...]
+) -> dict:
+    """Reset a sent_back submission to pending with updated questions and fresh approval stages.
+
+    Only the original creator may call this, and only when status == 'sent_back'.
+    All previous stage records are deleted and new ones are created.
+    """
+    conn = _connect()
+    row = conn.execute("SELECT * FROM exam_submissions WHERE id=?", (submission_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise ValueError("Submission not found")
+    sub = dict(row)
+    if sub["created_by"] != user_id:
+        conn.close()
+        raise ValueError("Only the creator can resubmit this submission")
+    if sub["status"] != "sent_back":
+        conn.close()
+        raise ValueError("Only sent_back submissions can be resubmitted")
+
+    now = datetime.now(timezone.utc).isoformat()
+    total_stages = len(stages)
+
+    # Replace old stages with fresh pending ones
+    conn.execute("DELETE FROM approval_stages WHERE submission_id=?", (submission_id,))
+    conn.execute(
+        """UPDATE exam_submissions
+           SET questions_json=?, status='pending', total_stages=?, current_stage=1, updated_at=?
+           WHERE id=?""",
+        (json.dumps(questions), total_stages, now, submission_id),
+    )
+    for i, stage in enumerate(stages, start=1):
+        conn.execute(
+            """INSERT INTO approval_stages
+               (id, submission_id, stage_number, officer_id, officer_name,
+                status, remark, actioned_at, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                str(uuid.uuid4()), submission_id, i,
+                stage["officer_id"], stage.get("officer_name", ""),
+                "pending", "", None, now,
+            ),
+        )
+    conn.commit()
+    result = _row_to_submission(
+        conn,
+        conn.execute("SELECT * FROM exam_submissions WHERE id=?", (submission_id,)).fetchone(),
+    )
+    conn.close()
+    return result
+

@@ -12,10 +12,11 @@ from app.database import (
     list_pending_for_officer,
     list_processed_by_officer,
     process_approval_action,
+    resubmit_for_approval,
     submit_exam_for_approval,
     update_submission_questions,
 )
-from app.models import ApprovalActionRequest, SubmitApprovalRequest
+from app.models import ApprovalActionRequest, ResubmitApprovalRequest, SubmitApprovalRequest
 from app.utils.sanitizer import sanitize_user_input
 
 log = logging.getLogger(__name__)
@@ -125,6 +126,37 @@ def api_action(
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
     log.info("Submission %s actioned '%s' by officer %s", submission_id, body.action, user["sub"])
+    return updated
+
+
+@router.post("/{submission_id}/resubmit")
+def api_resubmit(
+    submission_id: str,
+    body: ResubmitApprovalRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Creator resubmits a sent_back exam with updated questions and a fresh approval chain."""
+    officers_map = {o["id"]: o["username"] for o in list_approval_officers()}
+    for stage_cfg in body.stages:
+        if stage_cfg.officer_id not in officers_map:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"User {stage_cfg.officer_id!r} does not have approval access",
+            )
+    stages = [
+        {"officer_id": s.officer_id, "officer_name": officers_map[s.officer_id]}
+        for s in body.stages
+    ]
+    try:
+        updated = resubmit_for_approval(
+            submission_id=submission_id,
+            user_id=user["sub"],
+            questions=body.questions,
+            stages=stages,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+    log.info("Submission %s resubmitted by user %s", submission_id, user["sub"])
     return updated
 
 

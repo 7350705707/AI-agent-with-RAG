@@ -132,3 +132,8 @@ class ApprovalActionRequest(BaseModel):
     action: str = Field(..., pattern="^(approve|send_back)$")
     remark: str = Field(default="", max_length=2000)
 
+
+class ResubmitApprovalRequest(BaseModel):
+    questions: list[dict] = Field(default_factory=list)
+    stages: list[ApprovalStageConfig] = Field(..., min_length=1, max_length=3)
+
